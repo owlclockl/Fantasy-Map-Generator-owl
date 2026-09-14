@@ -1,0 +1,35 @@
+; Engine configuration file.
+; Fantasy Map Generator — Godot 4.7.2 edition.
+; A GDScript port of Azgaar's Fantasy Map Generator.
+
+config_version=5
+
+[application]
+
+config/name="Fantasy Map Generator"
+config/description="Процедурный генератор фэнтезийных карт: рельеф, реки, биомы, культуры, государства, города."
+run/main_scene="res://src/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[autoload]
+
+Sim="*res://src/core/map_data.gd"
+Names="*res://src/core/names.gd"
+
+[display]
+
+window/size/viewport_width=1680
+window/size/viewport_height=960
+window/stretch/mode="disabled"
+
+[input_devices]
+
+pointing/emulate_touch_from_mouse=false
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_2d=1
