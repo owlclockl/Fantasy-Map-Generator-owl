@@ -3,7 +3,7 @@ extends Node2D
 ## stage (keeping the UI responsive), handles the heightmap brush,
 ## save/load and PNG export.
 
-var sim: Node = null # Sim autoload
+var sim: FmgSim = null # Sim autoload
 var view: MapView = null
 var camera: MapCamera = null
 
@@ -33,7 +33,7 @@ const POINTS_BY_DENSITY := {1: 1000, 2: 2000, 3: 5000, 4: 10000, 5: 20000}
 
 
 func _ready() -> void:
-	sim = get_node("/root/Sim")
+	sim = get_node("/root/Sim") as FmgSim
 	view = MapView.new()
 	view.sim = sim
 	view.name = "MapView"
