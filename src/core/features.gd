@@ -16,7 +16,7 @@ const DEEP_WATER: int = -2
 ## wave expansion of the distance field: mark neighbors of `start` distance, stepping by increment
 static func markup_distance(distance_field: PackedInt32Array, neighbors: Array, start: int, increment: int, limit: int) -> void:
 	var distance: int = start
-	var marked: int = INF
+	var marked: int = 1 # any positive value to enter the loop; reset on first pass
 	while marked > 0 and distance != limit:
 		marked = 0
 		var prev_distance: int = distance - increment
@@ -126,10 +126,8 @@ static func markup_grid(grid: FmgGraph) -> void:
 ## Mark pack features (oceans, lakes, islands), build feature outline vertex
 ## chains, havens and harbors, then run the distance fields.
 static func markup_pack(pack: FmgGraph, map_width: float, map_height: float) -> void:
-	var cells := pack
 	var neighbors: Array = pack.c
 	var border_cells := pack.b
-	var vertices := pack.voronoi.vertices
 	var pack_cells_number: int = pack.cell_count()
 	if pack_cells_number == 0:
 		return
@@ -363,7 +361,7 @@ static func _connect_outline_vertices(cells: FmgGraph, vertices: FmgVoronoi.Vert
 				used[cell] = 1
 
 		var vv: PackedInt32Array = vertices.v[current]
-		var c := vertices.c[current]
+		var c: PackedInt32Array = vertices.c[current]
 		var c0: bool = cells.t[c[0]] == 0 or cells.t[c[0]] == t - 1
 		var c1: bool = cells.t[c[1]] == 0 or cells.t[c[1]] == t - 1
 		var c2: bool = cells.t[c[2]] == 0 or cells.t[c[2]] == t - 1
@@ -404,8 +402,6 @@ static func lake_height(pack: FmgGraph, feature: Dictionary) -> float:
 
 ## classify features: continents/islands, oceans/seas/gulfs, lake subtypes
 static func define_groups(pack: FmgGraph, grid_cell_count: int) -> void:
-	var OCEAN_MIN_SIZE: float = grid_cell_count / 25.0
-	var SEA_MIN_SIZE: float = grid_cell_count / 1000.0
 	var CONTINENT_MIN_SIZE: float = grid_cell_count / 10.0
 	var ISLAND_MIN_SIZE: float = grid_cell_count / 1000.0
 
