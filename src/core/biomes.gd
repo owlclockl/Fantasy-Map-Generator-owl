@@ -69,23 +69,22 @@ static func define(pack: FmgGraph, grid: FmgGraph) -> void:
 		var height: int = heights[cell_id]
 		var moisture: int = 0
 		if height >= MIN_LAND_HEIGHT:
-			moisture = _calculate_moisture(cell_id, neighbors, heights, river_ids, flux, grid_ref)
+			moisture = _calculate_moisture(cell_id, neighbors, heights, river_ids, flux, grid_ref, grid.g)
 		var temperature: int = grid_temp[grid.g[cell_id]]
 		pack.biome[cell_id] = get_biome_id(moisture, temperature, height, river_ids[cell_id] != 0)
 
 
-static func _calculate_moisture(cell_id: int, neighbors: Array, heights: PackedByteArray, river_ids: PackedInt32Array, flux: PackedFloat32Array, grid_prec: PackedInt32Array) -> int:
-	var moisture: int = grid_prec[0] # placeholder to keep types happy
-	var base: int = grid_prec[cell_id]
+static func _calculate_moisture(cell_id: int, neighbors: Array, heights: PackedByteArray, river_ids: PackedInt32Array, flux: PackedFloat32Array, grid_prec: PackedInt32Array, grid_mapping: PackedInt32Array) -> int:
+	var moisture: int = grid_prec[grid_mapping[cell_id]]
 	if river_ids[cell_id] != 0:
-		base += int(maxf(flux[cell_id] / 10.0, 2.0))
-	var sum_v: float = float(base)
+		moisture += int(maxf(flux[cell_id] / 10.0, 2.0))
+	var sum_v: float = float(moisture)
 	var count: float = 1.0
 	for neib: int in neighbors[cell_id]:
 		if heights[neib] >= MIN_LAND_HEIGHT:
-			sum_v += float(grid_prec[neib])
+			sum_v += float(grid_prec[grid_mapping[neib]])
 			count += 1.0
-	return int(4.0 + sum_v / count)
+	return roundi(4.0 + sum_v / count)
 
 
 static func get_biome_id(moisture: int, temperature: int, height: int, has_river: bool) -> int:

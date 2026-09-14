@@ -20,6 +20,7 @@ static func generate(seed_value: String, width: float, height: float, cells_desi
 
 	# the lattice plus one ring outside the map: boundary pseudo-points
 	# participate in the triangulation but receive no cells
+	graph.boundary = _boundary_points(width, height, spacing)
 	var combined := PackedVector2Array(graph.points)
 	combined.append_array(graph.boundary)
 	var del := Delaunator.from_points(combined)

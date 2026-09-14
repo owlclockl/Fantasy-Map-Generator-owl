@@ -46,6 +46,7 @@ var pack: FmgGraph = null
 var hydrology: FmgHydrology = null
 var burgs: FmgBurgs = null
 var generation_time_ms: int = 0
+var poles_cache: Dictionary = {} # state id -> pole cell position, cached for label rendering
 
 
 func climate() -> FmgClimate:
