@@ -1,7 +1,14 @@
+class_name FmgSim
 extends Node
 ## Sim — the world state singleton. Port of the original global `options`,
 ## `grid`, `pack` objects and the generation pipeline
 ## (generation-pipeline.ts). Autoloaded as `Sim`.
+##
+## The class name is intentionally different from the autoload name: `class_name Sim`
+## would clash with the singleton and the parser rejects it. UI scripts reference this
+## type so that `sim.grid` / `sim.pack` / `sim.hydrology` stay statically typed (an
+## untyped `Node` reference turns every member access into a Variant and breaks `:=`
+## type inference).
 
 signal stage_started(stage_name: String)
 signal map_generated()

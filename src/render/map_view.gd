@@ -25,7 +25,7 @@ const HYPSO: Array = [
 	Color("#c5b3a6"), Color("#e8e2da")
 ]
 
-var sim: Node = null # Sim autoload
+var sim: FmgSim = null # Sim autoload
 
 # layer toggles
 var show_politics: bool = true
