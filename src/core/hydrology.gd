@@ -68,7 +68,7 @@ func resolve_depressions(h: PackedFloat32Array) -> void:
 	var elevate_lake_max_iteration: float = max_iterations * 0.75
 
 	var lakes: Array = []
-	for feature: Dictionary in pack.features:
+	for feature in pack.features:
 		if feature != null and not feature.is_empty() and feature["type"] == "lake":
 			lakes.append(feature)
 
@@ -153,7 +153,7 @@ func resolve_depressions(h: PackedFloat32Array) -> void:
 
 ## check if a lake can potentially pour out (not in a deep depression)
 func detect_close_lakes(h: PackedFloat32Array) -> void:
-	for feature: Dictionary in pack.features:
+	for feature in pack.features:
 		if feature == null or feature.is_empty() or feature["type"] != "lake":
 			continue
 		feature.erase("closed")
@@ -201,7 +201,7 @@ func define_lake_climate_data(h: PackedFloat32Array) -> PackedInt32Array:
 	var lake_out_cells := PackedInt32Array()
 	lake_out_cells.resize(pack.cell_count())
 
-	for feature: Dictionary in pack.features:
+	for feature in pack.features:
 		if feature == null or feature.is_empty() or feature["type"] != "lake":
 			continue
 		var shoreline: PackedInt32Array = feature["shoreline"]
@@ -242,7 +242,7 @@ func define_lake_climate_data(h: PackedFloat32Array) -> PackedInt32Array:
 
 
 func cleanup_lake_data() -> void:
-	for feature: Dictionary in pack.features:
+	for feature in pack.features:
 		if feature == null or feature.is_empty() or feature["type"] != "lake":
 			continue
 		feature.erase("river")
@@ -253,7 +253,9 @@ func cleanup_lake_data() -> void:
 		if feature.has("inlets"):
 			var kept: Array = []
 			for inlet: int in feature["inlets"]:
-				for river: Dictionary in pack.rivers:
+				for river in pack.rivers:
+					if river == null:
+						continue
 					if river["i"] == inlet:
 						kept.append(inlet)
 						break
@@ -263,7 +265,9 @@ func cleanup_lake_data() -> void:
 				feature["inlets"] = kept
 		if feature.has("outlet"):
 			var has_outlet: bool = false
-			for river: Dictionary in pack.rivers:
+			for river in pack.rivers:
+				if river == null:
+					continue
 				if river["i"] == feature["outlet"]:
 					has_outlet = true
 					break
@@ -613,7 +617,7 @@ func resolve_lake_drain_feature(lake_feature_id: int) -> int:
 		return lake_feature_id
 
 	var river_by_id := {}
-	for river: Dictionary in pack.rivers:
+	for river in pack.rivers:
 		if river != null:
 			river_by_id[river["i"]] = river
 
@@ -645,7 +649,7 @@ func resolve_drain_feature(cell_id: int) -> int:
 		return 0
 
 	var river_by_id := {}
-	for river: Dictionary in pack.rivers:
+	for river in pack.rivers:
 		if river != null:
 			river_by_id[river["i"]] = river
 
@@ -674,7 +678,7 @@ func resolve_drain_feature(cell_id: int) -> int:
 func specify() -> void:
 	if pack.rivers.size() <= 1:
 		return
-	for river: Dictionary in pack.rivers:
+	for river in pack.rivers:
 		if river == null:
 			continue
 		river["parent"] = _get_parent(river["i"])
@@ -682,7 +686,7 @@ func specify() -> void:
 
 
 func _get_parent(r: int) -> int:
-	for river: Dictionary in pack.rivers:
+	for river in pack.rivers:
 		if river != null and river["i"] == r:
 			var parent: int = river["parent"]
 			if parent == 0 or parent == r:
@@ -694,7 +698,7 @@ func _get_parent(r: int) -> int:
 
 
 func _river_exists(r: int) -> bool:
-	for river: Dictionary in pack.rivers:
+	for river in pack.rivers:
 		if river != null and river["i"] == r:
 			return true
 	return false

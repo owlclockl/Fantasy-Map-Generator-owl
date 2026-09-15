@@ -68,7 +68,7 @@ func _run_headless_smoke() -> void:
 
 func _collect_state_names() -> String:
 	var names: Array = []
-	for s: Dictionary in sim.pack.states:
+	for s in sim.pack.states:
 		if s != null and int(s["i"]) > 0:
 			names.append("%s(%d)" % [s["name"], s.get("cells", 0)])
 	return ", ".join(names)
@@ -113,10 +113,9 @@ func run_generation(silent: bool = false) -> void:
 		progress_bar.value = float(i) / float(total)
 		await get_tree().process_frame
 		await get_tree().process_frame
-		var stage_fn: Callable = stage[1]
-		stage_fn.call()
+		sim.run_stage(stage)
 
-	sim.generation_time_ms = Time.get_ticks_msec() - t_start
+	sim.finish_generation(t_start)
 	progress_bar.value = 1.0
 	progress_bar.hide()
 	view.rebuild_cache()
@@ -141,8 +140,7 @@ func _regenerate_after_edit() -> void:
 		status_label.text = "Пересчёт: %s…" % stage[0]
 		progress_bar.value = float(i) / float(total)
 		await get_tree().process_frame
-		var stage_fn: Callable = stage[1]
-		stage_fn.call()
+		sim.run_stage(stage)
 	progress_bar.hide()
 	view.rebuild_cache()
 	status_label.text = sim.get_stats_text()
@@ -174,13 +172,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseMotion:
-		var motion := event as InputEventMouseMotion
 		if brush_active:
 			brush_world_pos = get_global_mouse_position()
 			view.queue_redraw()
 
 
-func _apply_brush(screen_pos: Vector2) -> void:
+func _apply_brush(_screen_pos: Vector2) -> void:
 	var world := get_global_mouse_position()
 	brush_world_pos = world
 	if sim.grid == null:

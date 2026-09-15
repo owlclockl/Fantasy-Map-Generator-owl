@@ -88,7 +88,7 @@ func _generate_capitals(populated_cells: PackedInt32Array) -> void:
 			if spacing < 1.0:
 				break
 
-	for b: Dictionary in pack.burgs:
+	for b in pack.burgs:
 		if b == null:
 			continue
 		var cell: int = b["cell"]
@@ -120,7 +120,7 @@ func _generate_towns(populated_cells: PackedInt32Array) -> void:
 			var p := pack.points[cell]
 			var min_spacing: float = spacing * rng.gauss(1.0, 0.3, 0.2, 2.0, 2)
 			var too_close: bool = false
-			for b: Dictionary in pack.burgs:
+			for b in pack.burgs:
 				if b == null:
 					continue
 				if Vector2(b["x"], b["y"]).distance_to(p) < min_spacing:
@@ -167,7 +167,7 @@ func get_type(cell_id: int, port: int = 0) -> String:
 ## assign port feature ids and shift burgs to the harbor / river bank
 func assign_ports() -> void:
 	var hydrology: FmgHydrology = _hydrology
-	for b: Dictionary in pack.burgs:
+	for b in pack.burgs:
 		if b == null:
 			continue
 		b.erase("port")
@@ -175,7 +175,7 @@ func assign_ports() -> void:
 	var grid_temp := grid.temp
 	# collect sea/lake port candidates
 	var candidates: Array = []
-	for b: Dictionary in pack.burgs:
+	for b in pack.burgs:
 		if b == null:
 			continue
 		var cell: int = b["cell"]
@@ -236,7 +236,7 @@ func assign_ports() -> void:
 		c["burg"]["y"] = pos[1]
 
 	# river ports
-	for b: Dictionary in pack.burgs:
+	for b in pack.burgs:
 		if b == null or b.has("port"):
 			continue
 		var cell: int = b["cell"]
@@ -284,7 +284,7 @@ func _shift_to_river_bank(cell_id: int) -> Vector2:
 	var river_id: int = pack.r[cell_id]
 	var tangent := Vector2.ZERO
 	if river_id != 0:
-		for river: Dictionary in pack.rivers:
+		for river in pack.rivers:
 			if river != null and river["i"] == river_id:
 				var cells_path: PackedInt32Array = river["cells"]
 				var idx: int = cells_path.find(cell_id)
@@ -318,7 +318,7 @@ func define_features(b: Dictionary) -> void:
 
 
 func specify() -> void:
-	for b: Dictionary in pack.burgs:
+	for b in pack.burgs:
 		if b == null or b.get("removed", false):
 			continue
 		define_population(b)

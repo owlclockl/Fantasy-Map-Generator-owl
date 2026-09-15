@@ -7,7 +7,7 @@ extends RefCounted
 const SEA_LEVEL: int = 20
 
 
-static func generate(grid: FmgGraph, rng: FmgRng) -> FmgGraph:
+static func generate(grid: FmgGraph, _rng: FmgRng) -> FmgGraph:
 	var grid_cells := grid
 	var new_points := PackedVector2Array()
 	var new_g := PackedInt32Array()

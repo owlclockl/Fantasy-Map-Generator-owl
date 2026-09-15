@@ -38,7 +38,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-func _zoom_at(screen_pos: Vector2, factor: float) -> void:
+func _zoom_at(_screen_pos: Vector2, factor: float) -> void:
 	var old_zoom: float = zoom.x
 	var new_zoom: float = clampf(old_zoom * factor, min_zoom, max_zoom)
 	if is_equal_approx(new_zoom, old_zoom):
