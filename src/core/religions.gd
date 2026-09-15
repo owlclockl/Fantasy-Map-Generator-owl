@@ -23,7 +23,7 @@ func generate() -> void:
 
 	# folk religion of every culture
 	var folk_by_culture := {}
-	for culture: Dictionary in pack.cultures:
+	for culture in pack.cultures:
 		if culture == null or int(culture["i"]) == 0:
 			continue
 		var rid: int = pack.religions.size()
@@ -42,7 +42,7 @@ func generate() -> void:
 
 	# organized religions: claim the most populated culture centers
 	var cultures_sorted: Array = []
-	for culture: Dictionary in pack.cultures:
+	for culture in pack.cultures:
 		if culture == null or int(culture["i"]) == 0:
 			continue
 		cultures_sorted.append(culture)
@@ -144,7 +144,7 @@ func generate() -> void:
 	pack.religion = religion_ids
 
 	# stats
-	for religion: Dictionary in pack.religions:
+	for religion in pack.religions:
 		if religion == null:
 			continue
 		religion["cellsCount"] = 0

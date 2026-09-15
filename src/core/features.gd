@@ -405,7 +405,7 @@ static func define_groups(pack: FmgGraph, grid_cell_count: int) -> void:
 	var CONTINENT_MIN_SIZE: float = grid_cell_count / 10.0
 	var ISLAND_MIN_SIZE: float = grid_cell_count / 1000.0
 
-	for feature: Dictionary in pack.features:
+	for feature in pack.features:
 		if feature == null or feature.is_empty():
 			continue
 		var type: String = feature["type"]

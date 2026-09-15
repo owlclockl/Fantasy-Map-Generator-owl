@@ -68,7 +68,7 @@ func rebuild_cache() -> void:
 		return
 
 	# coastline rings per feature, fractalized deterministically per feature id
-	for feature: Dictionary in sim.pack.features:
+	for feature in sim.pack.features:
 		if feature == null or feature.is_empty():
 			continue
 		var chain: PackedInt32Array = feature["vertices"]
@@ -108,7 +108,7 @@ func rebuild_cache() -> void:
 
 	# river polygons
 	if sim.hydrology != null:
-		for river: Dictionary in sim.pack.rivers:
+		for river in sim.pack.rivers:
 			if river == null:
 				continue
 			var poly := sim.hydrology.get_river_polygon(river)
@@ -196,7 +196,7 @@ func _draw() -> void:
 		_draw_labels()
 
 
-func _cell_color_safe(cell_id: int) -> Color:
+func _cell_color_safe(_cell_id: int) -> Color:
 	return Color.WHITE
 
 
@@ -332,7 +332,7 @@ func _draw_province_borders() -> void:
 
 
 func _draw_burgs() -> void:
-	for b: Dictionary in sim.pack.burgs:
+	for b in sim.pack.burgs:
 		if b == null:
 			continue
 		var pos := Vector2(b["x"], b["y"])
@@ -349,7 +349,7 @@ func _draw_burgs() -> void:
 
 func _draw_labels() -> void:
 	# state labels at poles of inaccessibility
-	for state: Dictionary in sim.pack.states:
+	for state in sim.pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		if not sim.poles_cache.has(state["i"]):
@@ -358,12 +358,12 @@ func _draw_labels() -> void:
 		var cells: int = state.get("cells", 10)
 		var font_size: float = clampf(sqrt(float(cells)) * 2.2, 9.0, 34.0)
 		var name_v: String = state.get("fullName", state["name"])
-		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size).x
-		draw_string_outline(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 3, COL_TEXT_OUT)
-		draw_string(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, COL_TEXT)
+		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size)).x
+		draw_string_outline(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, int(font_size), 3, COL_TEXT_OUT)
+		draw_string(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, int(font_size), COL_TEXT)
 
 	# burg labels
-	for b: Dictionary in sim.pack.burgs:
+	for b in sim.pack.burgs:
 		if b == null:
 			continue
 		var pop: float = float(b.get("population", 0.0))
@@ -372,5 +372,5 @@ func _draw_labels() -> void:
 			continue
 		var font_size: float = 4.5 if is_capital else clampf(2.5 + pop / 12.0, 3.0, 5.0)
 		var pos := Vector2(b["x"], b["y"]) + Vector2(0, 4.0 + font_size * 0.9)
-		draw_string_outline(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, 2, COL_TEXT_OUT)
-		draw_string(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, COL_TEXT)
+		draw_string_outline(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), 2, COL_TEXT_OUT)
+		draw_string(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), COL_TEXT)

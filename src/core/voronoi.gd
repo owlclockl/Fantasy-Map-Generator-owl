@@ -94,7 +94,7 @@ static func _triangles_adjacent_to_triangle(t: int, halfedges: PackedInt32Array)
 	return out
 
 
-static func _edges_around_point(start: int, halfedges: PackedInt32Array, triangles: PackedInt32Array) -> PackedInt32Array:
+static func _edges_around_point(start: int, halfedges: PackedInt32Array, _triangles: PackedInt32Array) -> PackedInt32Array:
 	var result := PackedInt32Array()
 	var incoming: int = start
 	while true:

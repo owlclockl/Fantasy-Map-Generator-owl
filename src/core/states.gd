@@ -46,7 +46,7 @@ func create_states() -> void:
 	pack.states = [{"i": 0, "name": "Neutrals", "color": "", "form": "Wild", "provinces": []}]
 	var each5th: bool = false
 
-	for b: Dictionary in pack.burgs:
+	for b in pack.burgs:
 		if b == null or b.get("capital", 0) != 1:
 			continue
 		var expansionism: float = FmgRng.rn(rng.random() * size_variety + 1.0, 1)
@@ -132,7 +132,7 @@ func expand_states() -> void:
 	pack.state.resize(pack.cell_count())
 	var growth_rate_v: float = (float(pack.cell_count()) / 2.0) * growth_rate
 
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		var capital_cell: int = pack.burg[state["capital"]]
@@ -175,7 +175,7 @@ func expand_states() -> void:
 				cost[neib] = total_cost
 				queue.push([neib, total_cost, s, b], total_cost)
 
-	for burg: Dictionary in pack.burgs:
+	for burg in pack.burgs:
 		if burg == null:
 			continue
 		burg["state"] = pack.state[burg["cell"]]
@@ -254,7 +254,7 @@ func get_poles() -> void:
 
 
 func find_neighbors() -> void:
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null:
 			continue
 		state["neighbors"] = []
@@ -268,7 +268,7 @@ func find_neighbors() -> void:
 		for c: int in pack.c[i]:
 			if pack.h[c] >= 20 and pack.state[c] != s:
 				neighbor_sets[s][pack.state[c]] = true
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		var set_dict: Dictionary = neighbor_sets.get(state["i"], {})
@@ -279,7 +279,7 @@ func find_neighbors() -> void:
 func assign_colors() -> void:
 	var base_colors: Array = ["#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3", "#a6d854", "#ffd92f"]
 	var colors: Array = base_colors.duplicate()
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		var assigned: String = ""
@@ -299,14 +299,14 @@ func assign_colors() -> void:
 		colors.append(colors.pop_front())
 
 	# randomize each already-used color a bit
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		state["color"] = FmgColors.get_mixed_color(state["color"], rng, 0.06, 0)
 
 
 func collect_statistics() -> void:
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null:
 			continue
 		state["cells"] = 0
@@ -324,7 +324,7 @@ func collect_statistics() -> void:
 		state["cells"] = int(state["cells"]) + 1
 		state["area"] = float(state["area"]) + pack.area[i]
 		state["rural"] = float(state["rural"]) + pack.pop[i]
-	for burg: Dictionary in pack.burgs:
+	for burg in pack.burgs:
 		if burg == null:
 			continue
 		var s: int = burg.get("state", 0)
@@ -335,7 +335,7 @@ func collect_statistics() -> void:
 
 
 func define_state_forms() -> void:
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		var cells: int = state.get("cells", 0)

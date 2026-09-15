@@ -35,13 +35,13 @@ func generate() -> void:
 
 	var max_growth: float = rng.gauss(20.0, 5.0, 5.0, 100.0) * sqrt(provinces_ratio) if provinces_ratio < 100.0 else 1000.0
 
-	for state: Dictionary in pack.states:
+	for state in pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		state["provinces"] = []
 
 		var state_burgs: Array = []
-		for b: Dictionary in pack.burgs:
+		for b in pack.burgs:
 			if b == null:
 				continue
 			if b.get("state", 0) == int(state["i"]) and province_ids[b["cell"]] == 0:
@@ -85,7 +85,7 @@ func generate() -> void:
 	var cost := PackedFloat64Array()
 	cost.resize(pack.cell_count())
 
-	for p: Dictionary in pack.provinces:
+	for p in pack.provinces:
 		if p == null:
 			continue
 		province_ids[p["center"]] = p["i"]
@@ -170,7 +170,7 @@ func generate() -> void:
 			dist[c] = dist[cell] + 1
 			queue_cells.append(c)
 	var best_depth := {}
-	for p: Dictionary in pack.provinces:
+	for p in pack.provinces:
 		if p == null:
 			continue
 		p["pole"] = pack.points[p["center"]]

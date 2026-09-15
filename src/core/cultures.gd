@@ -269,7 +269,7 @@ func generate() -> void:
 	# the first culture with id 0 is for wildlands
 	pack.cultures[0] = {"name": "Wildlands", "i": 0, "base": 1, "origins": [null], "type": "Generic", "center": 0}
 
-	for c: Dictionary in pack.cultures:
+	for c in pack.cultures:
 		if c == null:
 			continue
 		c["base"] = int(c["base"]) % Names.name_bases.size()
@@ -370,7 +370,7 @@ func expand() -> void:
 	pack.culture = PackedInt32Array()
 	pack.culture.resize(pack.cell_count())
 
-	for culture: Dictionary in pack.cultures:
+	for culture in pack.cultures:
 		if culture == null or int(culture["i"]) == 0:
 			continue
 		queue.push([int(culture["center"]), int(culture["i"]), 0.0], 0.0)

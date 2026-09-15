@@ -128,7 +128,7 @@ class Population:
 		"lava": -30.0
 	}
 
-	static func rank_cells(pack: FmgGraph, rng: FmgRng) -> void:
+	static func rank_cells(pack: FmgGraph, _rng: FmgRng) -> void:
 		var cells_count: int = pack.cell_count()
 		pack.s = PackedInt32Array()
 		pack.s.resize(cells_count)

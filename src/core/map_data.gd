@@ -182,13 +182,13 @@ func _stage_names() -> void:
 	# river names and types + lake names, based on local cultures
 	if pack.rivers.size() > 1:
 		var lengths: Array = []
-		for river: Dictionary in pack.rivers:
+		for river in pack.rivers:
 			if river != null:
 				lengths.append(float(river.get("length", 0.0)))
 		lengths.sort()
 		var small_length: float = lengths[mini(int(ceil(float(lengths.size()) * 0.15)), lengths.size() - 1)] if lengths.size() > 0 else 0.0
 
-		for river: Dictionary in pack.rivers:
+		for river in pack.rivers:
 			if river == null:
 				continue
 			var mouth: int = river["mouth"]
@@ -204,7 +204,7 @@ func _stage_names() -> void:
 				else:
 					river["type"] = "Река"
 
-	for feature: Dictionary in pack.features:
+	for feature in pack.features:
 		if feature == null or feature.is_empty() or feature["type"] != "lake":
 			continue
 		var shoreline: PackedInt32Array = feature["shoreline"]
@@ -219,6 +219,21 @@ func pipeline_from_heightmap() -> Array:
 	return pipeline().slice(2)
 
 
+## run a single pipeline stage; main.gd drives the loop (one stage per couple
+## of frames to keep the UI responsive). Broadcasts stage_started.
+func run_stage(stage: Array) -> void:
+	stage_started.emit(stage[0])
+	var stage_fn: Callable = stage[1]
+	stage_fn.call()
+
+
+## called by main.gd when the pipeline is complete: records the generation
+## time and broadcasts map_generated
+func finish_generation(start_ms: int) -> void:
+	generation_time_ms = Time.get_ticks_msec() - start_ms
+	map_generated.emit()
+
+
 func get_stats_text() -> String:
 	if pack == null:
 		return "Карта не сгенерирована"
@@ -227,11 +242,11 @@ func get_stats_text() -> String:
 		if pack.h[i] >= SEA_LEVEL:
 			land_cells += 1
 	var states_count: int = 0
-	for s: Dictionary in pack.states:
+	for s in pack.states:
 		if s != null and int(s["i"]) > 0:
 			states_count += 1
 	var burgs_count: int = 0
-	for b: Dictionary in pack.burgs:
+	for b in pack.burgs:
 		if b != null:
 			burgs_count += 1
 	var rivers_count: int = maxi(pack.rivers.size() - 1, 0)
@@ -316,7 +331,7 @@ func _pack_points(points: PackedVector2Array) -> Array:
 func _collect_feature_names() -> Dictionary:
 	var out := {}
 	if pack != null:
-		for feature: Dictionary in pack.features:
+		for feature in pack.features:
 			if feature == null or feature.is_empty():
 				continue
 			if feature.get("name", "") != "":

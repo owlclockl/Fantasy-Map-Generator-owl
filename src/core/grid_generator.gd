@@ -172,7 +172,9 @@ static func open_near_sea_lakes(graph: FmgGraph, is_atoll: bool) -> void:
 	if is_atoll:
 		return
 	var has_lakes: bool = false
-	for feat: Dictionary in graph.features:
+	for feat in graph.features: # features[0] is a null placeholder
+		if feat == null:
+			continue
 		if feat.get("type", "") == "lake":
 			has_lakes = true
 			break
