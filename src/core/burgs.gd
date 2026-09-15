@@ -39,7 +39,7 @@ func generate() -> void:
 
 func _burgs_number() -> int:
 	if burgs_limit < 0:
-		return FmgRng.rn(populated_size_cache / 5.0 / pow(float(grid.points.size()) / 10000.0, 0.8))
+		return int(FmgRng.rn(populated_size_cache / 5.0 / pow(float(grid.points.size()) / 10000.0, 0.8)))
 	return mini(burgs_limit, populated_size_cache)
 
 var populated_size_cache: int = 0

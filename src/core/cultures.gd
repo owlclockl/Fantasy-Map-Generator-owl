@@ -259,7 +259,7 @@ func generate() -> void:
 		c["type"] = _define_culture_type(center)
 		c["expansionism"] = _define_expansionism(c["type"])
 		c["origins"] = [0]
-		c["code"] = Names.abbreviate(c["name"], codes)
+		c["code"] = FmgNames.abbreviate(c["name"], codes)
 		codes.append(c["code"])
 		culture_ids[center] = new_id
 		pack.cultures.append(c)
