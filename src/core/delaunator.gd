@@ -27,7 +27,6 @@ var _cx: float = 0.0
 var _cy: float = 0.0
 var triangles_len: int = 0
 var _edge_stack: PackedInt32Array = PackedInt32Array()
-var _edge_sp: int = 0
 
 
 static func from_points(points: PackedVector2Array) -> Delaunator:

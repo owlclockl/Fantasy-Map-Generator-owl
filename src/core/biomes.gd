@@ -69,8 +69,8 @@ static func define(pack: FmgGraph, grid: FmgGraph) -> void:
 		var height: int = heights[cell_id]
 		var moisture: int = 0
 		if height >= MIN_LAND_HEIGHT:
-			moisture = _calculate_moisture(cell_id, neighbors, heights, river_ids, flux, grid_ref, grid.g)
-		var temperature: int = grid_temp[grid.g[cell_id]]
+			moisture = _calculate_moisture(cell_id, neighbors, heights, river_ids, flux, grid_ref, pack.g)
+		var temperature: int = grid_temp[pack.g[cell_id]]
 		pack.biome[cell_id] = get_biome_id(moisture, temperature, height, river_ids[cell_id] != 0)
 
 
@@ -97,7 +97,7 @@ static func get_biome_id(moisture: int, temperature: int, height: int, has_river
 	if _is_wetland(moisture, temperature, height):
 		return 12 # too wet: wetland
 
-	var moisture_band: int = mini(moisture / 5, 4)
+	var moisture_band: int = mini(moisture / 5.0, 4.0)
 	var temperature_band: int = clampi(20 - temperature, 0, 25)
 	return BIOMES_MATRIX[moisture_band][temperature_band]
 
@@ -140,7 +140,7 @@ class Population:
 			if f > 0:
 				fluxes.append(f)
 		fluxes.sort()
-		var mean_flux: float = fluxes[fluxes.size() / 2] if fluxes.size() > 0 else 0.0
+		var mean_flux: float = fluxes[int(float(fluxes.size()) / 2.0)] if fluxes.size() > 0 else 0.0
 		var max_fl: float = 0.0
 		var max_conf: float = 0.0
 		for f: float in pack.fl:
