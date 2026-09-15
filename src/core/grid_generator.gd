@@ -8,7 +8,7 @@ extends RefCounted
 const SEA_LEVEL: int = 20
 
 
-static func generate(seed_value: String, width: float, height: float, cells_desired: int, rng: FmgRng) -> FmgGraph:
+static func generate(_seed_value: String, width: float, height: float, cells_desired: int, rng: FmgRng) -> FmgGraph:
 	var spacing: float = get_spacing(cells_desired, width, height)
 	var graph := FmgGraph.new()
 	graph.spacing = spacing
@@ -108,14 +108,12 @@ static func find_cell_in_pack(graph: FmgGraph, x: float, y: float, radius: float
 
 
 ## turn depressions that cannot pour to water into lakes (grid level)
-static func add_deep_depression_lakes(graph: FmgGraph, rng: FmgRng, lake_elevation_limit: int) -> void:
+static func add_deep_depression_lakes(graph: FmgGraph, _rng: FmgRng, lake_elevation_limit: int) -> void:
 	if lake_elevation_limit == 80:
 		return
 	var c: Array = graph.c
 	var h := graph.h
 	var b := graph.b
-	var t := graph.t
-	var f := graph.f
 
 	for i: int in graph.cell_count():
 		if b[i] != 0 or h[i] < SEA_LEVEL:
