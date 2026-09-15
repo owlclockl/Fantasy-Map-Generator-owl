@@ -38,8 +38,12 @@ const NAMES_RU: Array = [
 ]
 
 
+## 0-based, exactly like the NAMES/COLORS/COST tables and the ids stored in
+## `pack.biome`: index 0 is the real "Marine" biome, not a placeholder. Do not
+## prepend a null sentinel here — `pack.biomes[pack.biome[cell]]` is looked up
+## unguarded and every water cell has biome id 0.
 static func get_default_biomes() -> Array:
-	var out: Array = [null]
+	var out: Array = []
 	for i: int in NAMES.size():
 		out.append({
 			"i": i,
