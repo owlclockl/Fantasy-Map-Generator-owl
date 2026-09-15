@@ -19,6 +19,11 @@ const CULTURE_SETS := {
 
 const CULTURE_TYPES: Array = ["Generic", "Hunting", "Highland", "River", "Lake", "Naval", "Nomadic"]
 
+## input names bound when parsing the sort formulas below; "i" is the cell id.
+## Declared as a typed const so the array literal is folded at compile time
+## (PackedStringArray(...) is not a constant expression in GDScript).
+const EXPR_INPUTS: PackedStringArray = ["i"]
+
 ## rows: [name, nameBase, odd, sortExpression, shield]
 const SET_WORLD := [
 	["Shwazen", 0, 0.7, "n(i) / td(i, 10) / bd(i, 6, 8)", ""],
@@ -175,7 +180,6 @@ var size_variety: float = 4.0
 var growth_rate: float = 1.0
 
 # expression evaluation state
-var _e_cell: int = 0
 var _s_max: float = 1.0
 
 
@@ -304,12 +308,18 @@ func _place_center(sort_expr: String, populated: PackedInt32Array, culture_ids: 
 	var spacing: float = (pack.width + pack.height) / 2.0 / float(count)
 	var sorted := Array(populated)
 	var expr := Expression.new()
-	expr.parse(sort_expr)
+	# "i" must be declared as an input name, otherwise the parser treats the
+	# bare identifier as a named index into the base instance (self) and every
+	# execute() fails with "Invalid named index 'i' for base type Object".
+	var parsed: bool = expr.parse(sort_expr, EXPR_INPUTS) == OK
+	if not parsed:
+		push_warning("Cannot parse culture sort expression '%s': %s" % [sort_expr, expr.get_error_text()])
+
 	var sort_values := {}
 	for cell_id: int in populated:
-		sort_values[cell_id] = _eval_sort(expr, cell_id)
+		sort_values[cell_id] = _eval_sort(expr, cell_id) if parsed else float(pack.s[cell_id])
 	sorted.sort_custom(func(a: int, b: int) -> bool:
-		return sort_values.get(a, -INF) > sort_values.get(b, -INF))
+		return float(sort_values.get(a, -INF)) > float(sort_values.get(b, -INF)))
 
 	var max_index: int = int(sorted.size() / 2.0)
 	var cell_id: int = 0
@@ -466,11 +476,14 @@ func _get_type_cost(t: int, type: String) -> float:
 # --- Expression helpers (bound as methods on self during evaluation) ---
 
 func _eval_sort(expr: Expression, cell_id: int) -> float:
-	_e_cell = cell_id
-	var out: Variant = expr.execute([], self)
-	if expr.has_execute_failed() or out == null:
+	# show_error = false: this runs once per populated cell, so a bad formula
+	# would otherwise flood the console with one engine error per cell.
+	var out: Variant = expr.execute([cell_id], self, false)
+	if expr.has_execute_failed() or not (out is float or out is int):
 		return -INF
-	return float(out)
+	var value: float = float(out)
+	# NaN would make the comparator inconsistent and break sort_custom
+	return -INF if is_nan(value) else value
 
 
 func n(cell_id: int) -> float:
