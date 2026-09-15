@@ -58,7 +58,6 @@ func generate_precipitation(grid: FmgGraph, cells_desired: int, rng: FmgRng) -> 
 	var cells_count: int = grid.cell_count()
 	grid.prec = PackedInt32Array()
 	grid.prec.resize(cells_count)
-	var h := grid.h
 	var cells_x: int = grid.cells_x
 	var cells_y: int = grid.cells_y
 

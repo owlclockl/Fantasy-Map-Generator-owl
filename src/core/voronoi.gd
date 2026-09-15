@@ -39,6 +39,7 @@ func _build(delaunay: Delaunator, _points_n_total: int, points_n: int) -> void:
 	cells.c.resize(points_n)
 	cells.b.resize(points_n)
 
+	@warning_ignore(integer_division)
 	var tri_count: int = triangles.size() / 3
 	vertices.p.resize(tri_count)
 	vertices.v.resize(tri_count)
@@ -107,6 +108,7 @@ static func _edges_around_point(start: int, halfedges: PackedInt32Array, _triang
 
 
 static func _triangle_of_edge(e: int) -> int:
+	@warning_ignore(integer_division)
 	return e / 3 if e >= 0 else -1
 
 

@@ -69,8 +69,8 @@ static func define(pack: FmgGraph, grid: FmgGraph) -> void:
 		var height: int = heights[cell_id]
 		var moisture: int = 0
 		if height >= MIN_LAND_HEIGHT:
-			moisture = _calculate_moisture(cell_id, neighbors, heights, river_ids, flux, grid_ref, grid.g)
-		var temperature: int = grid_temp[grid.g[cell_id]]
+			moisture = _calculate_moisture(cell_id, neighbors, heights, river_ids, flux, grid_ref, pack.g)
+		var temperature: int = grid_temp[pack.g[cell_id]]
 		pack.biome[cell_id] = get_biome_id(moisture, temperature, height, river_ids[cell_id] != 0)
 
 

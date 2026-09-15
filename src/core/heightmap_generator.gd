@@ -385,6 +385,7 @@ func invert(count: float, axes: String) -> void:
 	var old := PackedByteArray(heights)
 	for i: int in heights.size():
 		var x: int = i % grid.cells_x
+		@warning_ignore(integer_division)
 		var y: int = i / grid.cells_x
 		var nx: int = grid.cells_x - x - 1 if invert_x else x
 		var ny: int = grid.cells_y - y - 1 if invert_y else y
