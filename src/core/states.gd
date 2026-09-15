@@ -44,7 +44,6 @@ func generate() -> void:
 
 func create_states() -> void:
 	pack.states = [{"i": 0, "name": "Neutrals", "color": "", "form": "Wild", "provinces": []}]
-	var each5th: bool = false
 
 	for b in pack.burgs:
 		if b == null or b.get("capital", 0) != 1:

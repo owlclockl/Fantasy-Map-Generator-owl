@@ -1,3 +1,4 @@
+class_name FmgNames
 extends Node
 ## Names: Markov-chain name generator. Port of names-generator.ts.
 ## Autoloaded as `Names`. Reads cultures from `Sim.pack`.

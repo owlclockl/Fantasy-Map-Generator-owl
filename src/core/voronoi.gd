@@ -107,7 +107,7 @@ static func _edges_around_point(start: int, halfedges: PackedInt32Array, _triang
 
 
 static func _triangle_of_edge(e: int) -> int:
-	return e / 3 if e >= 0 else -1
+	return int(float(e) / 3.0) if e >= 0 else -1
 
 
 static func _next_halfedge(e: int) -> int:
