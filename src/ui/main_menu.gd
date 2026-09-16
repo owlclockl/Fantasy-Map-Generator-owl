@@ -1,10 +1,10 @@
 class_name FmgMainMenu
 extends Control
-## The main menu, replicated from the original Fantasy Map Generator: a
-## draggable panel with a tab bar (Layers / Style / Options / Tools / About),
-## a trigger button (►) when hidden, a bottom "sticked" button row, a command
-## search (omnibar) and a loading overlay. All controls are styled by
-## FmgUiTheme, exactly like the browser version's palette.
+## Apple-style "Liquid Glass" (Glassmorphism) main menu for Fantasy Map Generator:
+## Translucent frosted glass panel with specular rim highlight, smooth rounded squircles,
+## Apple segmented tab bar (Layers / Style / Options / Tools / About),
+## Dynamic Island floating trigger pill, bottom glass action dock,
+## Spotlight-style command palette, and responsive status bar.
 
 signal generate_requested
 signal save_requested
@@ -15,51 +15,78 @@ signal climate_apply_requested
 signal brush_regen_requested
 signal overview_requested(kind: String) # burgs / states / rivers / markers
 
-const MENU_WIDTH := 348.0
+const MENU_WIDTH := 376.0
 const TAB_IDS: Array = ["layers", "style", "options", "tools", "about"]
 const TAB_TITLES: Dictionary = {
 	"layers": "Слои", "style": "Стиль", "options": "Опции",
-	"tools": "Инструменты", "about": "О программе"
+	"tools": "Инструменты", "about": "Инфо"
+}
+const TAB_ICONS: Dictionary = {
+	"layers": "🗺️", "style": "🎨", "options": "⚙️",
+	"tools": "🛠️", "about": "ℹ️"
 }
 
-# layer registry: id -> {label, key, prop} (prop is a MapView boolean)
+# 33 layer registry
 const LAYERS: Array = [
 	{"id": "heightmap", "label": "Высоты", "key": KEY_H, "prop": "show_heights"},
-	{"id": "lakes", "label": "Озёра", "key": KEY_Q, "prop": "show_lakes"},
-	{"id": "biomes", "label": "Биомы", "key": KEY_B, "prop": "show_biomes"},
-	{"id": "cells", "label": "Ячейки", "key": KEY_E, "prop": "show_cell_borders"},
-	{"id": "grid", "label": "Сетка", "key": KEY_SEMICOLON, "prop": "show_grid"},
-	{"id": "coordinates", "label": "Координаты", "key": KEY_O, "prop": "show_coordinates"},
-	{"id": "compass", "label": "Роза ветров", "key": KEY_W, "prop": "show_compass"},
-	{"id": "rivers", "label": "Реки", "key": KEY_V, "prop": "show_rivers"},
-	{"id": "relief", "label": "Иконки рельефа", "key": KEY_F, "prop": "show_relief_icons"},
 	{"id": "relief_shading", "label": "Затенение высот", "key": 0, "prop": "show_relief"},
-	{"id": "religions", "label": "Религии", "key": KEY_R, "prop": "show_religions"},
-	{"id": "cultures", "label": "Культуры", "key": KEY_C, "prop": "show_cultures"},
+	{"id": "relief", "label": "Иконки рельефа", "key": KEY_F, "prop": "show_relief_icons"},
+	{"id": "lakes", "label": "Озёра", "key": KEY_Q, "prop": "show_lakes"},
+	{"id": "rivers", "label": "Реки", "key": KEY_V, "prop": "show_rivers"},
+	{"id": "biomes", "label": "Биомы", "key": KEY_B, "prop": "show_biomes"},
+	{"id": "ice", "label": "Лёд", "key": KEY_J, "prop": "show_ice"},
 	{"id": "states", "label": "Государства", "key": KEY_S, "prop": "show_politics"},
 	{"id": "provinces", "label": "Провинции", "key": KEY_P, "prop": "show_provinces"},
-	{"id": "zones", "label": "Зоны", "key": KEY_Z, "prop": "show_zones"},
 	{"id": "borders", "label": "Границы", "key": KEY_D, "prop": "show_borders"},
+	{"id": "burgIcons", "label": "Города", "key": KEY_I, "prop": "show_burgs"},
+	{"id": "cultures", "label": "Культуры", "key": KEY_C, "prop": "show_cultures"},
+	{"id": "religions", "label": "Религии", "key": KEY_R, "prop": "show_religions"},
+	{"id": "population", "label": "Население", "key": KEY_N, "prop": "show_population"},
+	{"id": "compass", "label": "Роза ветров", "key": KEY_W, "prop": "show_compass"},
+	{"id": "grid", "label": "Сетка", "key": KEY_SEMICOLON, "prop": "show_grid"},
+	{"id": "coordinates", "label": "Координаты", "key": KEY_O, "prop": "show_coordinates"},
+	{"id": "scaleBar", "label": "Масштаб", "key": KEY_SLASH, "prop": "show_scale_bar"},
+	{"id": "rulers", "label": "Линейка", "key": KEY_EQUAL, "prop": "show_rulers"},
 	{"id": "routes", "label": "Дороги", "key": KEY_U, "prop": "show_routes"},
-	{"id": "temperature", "label": "Температура", "key": KEY_T, "prop": "show_temperature"},
-	{"id": "ice", "label": "Лёд", "key": KEY_J, "prop": "show_ice"},
+	{"id": "journeys", "label": "Путешествия", "key": 0, "prop": "show_journeys"},
 	{"id": "goods", "label": "Ресурсы", "key": KEY_G, "prop": "show_goods"},
 	{"id": "markets", "label": "Рынки", "key": 0, "prop": "show_markets"},
 	{"id": "trade", "label": "Торговля", "key": KEY_QUOTELEFT, "prop": "show_trade"},
-	{"id": "precipitation", "label": "Осадки", "key": KEY_A, "prop": "show_precipitation"},
-	{"id": "population", "label": "Население", "key": KEY_N, "prop": "show_population"},
-	{"id": "emblems", "label": "Гербы", "key": KEY_Y, "prop": "show_emblems"},
-	{"id": "burgIcons", "label": "Иконки городов", "key": KEY_I, "prop": "show_burgs"},
-	{"id": "labels", "label": "Подписи", "key": KEY_L, "prop": "show_labels"},
 	{"id": "military", "label": "Армии", "key": KEY_M, "prop": "show_armies"},
+	{"id": "emblems", "label": "Гербы", "key": KEY_Y, "prop": "show_emblems"},
 	{"id": "markers", "label": "Маркеры", "key": KEY_K, "prop": "show_markers"},
-	{"id": "journeys", "label": "Путешествия", "key": 0, "prop": "show_journeys"},
-	{"id": "rulers", "label": "Линейка", "key": KEY_EQUAL, "prop": "show_rulers"},
-	{"id": "scaleBar", "label": "Масштаб", "key": KEY_SLASH, "prop": "show_scale_bar"},
-	{"id": "vignette", "label": "Виньетка", "key": KEY_BRACKETLEFT, "prop": "show_vignette"}
+	{"id": "zones", "label": "Зоны", "key": KEY_Z, "prop": "show_zones"},
+	{"id": "labels", "label": "Подписи", "key": KEY_L, "prop": "show_labels"},
+	{"id": "vignette", "label": "Виньетка", "key": KEY_BRACKETLEFT, "prop": "show_vignette"},
+	{"id": "cells", "label": "Ячейки", "key": KEY_E, "prop": "show_cell_borders"},
+	{"id": "temperature", "label": "Температура", "key": KEY_T, "prop": "show_temperature"},
+	{"id": "precipitation", "label": "Осадки", "key": KEY_A, "prop": "show_precipitation"}
 ]
 
-# layer presets from layers-presets.ts (mapped to this port's layer ids)
+const LAYER_CATEGORIES: Array = [
+	{
+		"title": "🏔️ Рельеф и природа",
+		"ids": ["heightmap", "relief_shading", "relief", "lakes", "rivers", "biomes", "ice"]
+	},
+	{
+		"title": "👑 Государства и общество",
+		"ids": ["states", "provinces", "borders", "burgIcons", "cultures", "religions", "population"]
+	},
+	{
+		"title": "🧭 Навигация и разметка",
+		"ids": ["compass", "grid", "coordinates", "scaleBar", "rulers", "routes", "journeys"]
+	},
+	{
+		"title": "⚖️ Экономика и события",
+		"ids": ["goods", "markets", "trade", "military", "emblems", "markers", "zones"]
+	},
+	{
+		"title": "🎨 Климат и эффекты",
+		"ids": ["labels", "vignette", "cells", "temperature", "precipitation"]
+	}
+]
+
+# 13 layer presets
 const PRESETS: Dictionary = {
 	"political": ["borders", "burgIcons", "ice", "labels", "lakes", "rivers", "routes", "scaleBar", "states", "vignette"],
 	"cultural": ["borders", "burgIcons", "cultures", "labels", "lakes", "rivers", "routes", "scaleBar", "vignette"],
@@ -86,7 +113,7 @@ var sim: FmgSim = null
 var view: MapView = null
 var ui_theme: FmgUiTheme = null
 
-# menu controls
+# Menu elements
 var menu: PanelContainer = null
 var trigger_box: HBoxContainer = null
 var trigger_button: Button = null
@@ -107,7 +134,7 @@ var omnibar: PanelContainer = null
 var omnibar_edit: LineEdit = null
 var omnibar_results: VBoxContainer = null
 
-# options (map settings for the next generation)
+# Options
 var seed_edit: LineEdit = null
 var template_option: OptionButton = null
 var density_option: OptionButton = null
@@ -126,7 +153,7 @@ var climate_south_spin: SpinBox = null
 var climate_precip_spin: SpinBox = null
 var wind_spins: Array = []
 
-# tools
+# Tools
 var brush_option: OptionButton = null
 var brush_size: HSlider = null
 var ruler_check: CheckButton = null
@@ -143,16 +170,14 @@ func setup(sim_ref: FmgSim, view_ref: MapView, theme_ref: FmgUiTheme) -> void:
 	ui_theme = theme_ref
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 	_build_trigger()
 	_build_menu()
 	_build_export_popup()
 	_build_omnibar()
 	_build_loading_overlay()
 	_build_status_bar()
-	# the monospace font and a compact size cascade to every child control
-	for root: Control in [menu, trigger_box, export_popup, omnibar]:
-		root.add_theme_font_override("font", FmgUiTheme.mono())
-		root.add_theme_font_size_override("font_size", 13)
+
 	select_tab("layers")
 	ui_theme.changed.connect(_on_theme_changed)
 	_on_theme_changed()
@@ -162,69 +187,93 @@ func setup(sim_ref: FmgSim, view_ref: MapView, theme_ref: FmgUiTheme) -> void:
 # ---------------------------------------------------------------------------
 # Construction
 
+## Dynamic Island / Floating pill trigger button when the menu is collapsed.
 func _build_trigger() -> void:
 	trigger_box = HBoxContainer.new()
-	trigger_box.position = Vector2(10, 10)
-	trigger_box.add_theme_constant_override("separation", 6)
-	trigger_box.visible = false # the menu itself starts visible
+	trigger_box.position = Vector2(16, 16)
+	trigger_box.add_theme_constant_override("separation", 8)
+	trigger_box.visible = false
 	add_child(trigger_box)
+
 	trigger_button = Button.new()
-	trigger_button.text = "►"
-	trigger_button.tooltip_text = "Показать меню (Tab)"
+	trigger_button.text = "🧭 Меню (Tab)"
+	trigger_button.tooltip_text = "Открыть панель управления картой (Tab)"
 	trigger_button.pressed.connect(show_menu)
-	_style_tag(trigger_button, "button")
+	_style_tag(trigger_button, "pill")
 	trigger_box.add_child(trigger_button)
+
 	new_map_button = Button.new()
-	new_map_button.text = "Новая карта!"
-	new_map_button.tooltip_text = "Сгенерировать новую карту (F2)"
-	new_map_button.visible = false
+	new_map_button.text = "✦ Новая карта (F2)"
+	new_map_button.tooltip_text = "Сгенерировать новую случайную карту (F2)"
 	new_map_button.pressed.connect(request_new_map)
 	_style_tag(new_map_button, "accent")
 	trigger_box.add_child(new_map_button)
 
 
+## The main Liquid Glass panel.
 func _build_menu() -> void:
 	menu = PanelContainer.new()
-	menu.position = Vector2(10, 10)
+	menu.position = Vector2(16, 16)
 	menu.custom_minimum_size = Vector2(MENU_WIDTH, 0)
 	_style_tag(menu, "panel")
 	add_child(menu)
 
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 0)
-	menu.add_child(box)
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 8)
+	menu.add_child(main_vbox)
 
-	# drag bar
-	var drag := PanelContainer.new()
-	drag.custom_minimum_size = Vector2(0, 14)
-	drag.mouse_filter = Control.MOUSE_FILTER_STOP
-	drag.tooltip_text = "Перетащите, чтобы переместить меню"
-	_style_tag(drag, "dragbar")
+	# --- Window Header (macOS style frosted bar with grip and close button) ---
+	var header_bar := PanelContainer.new()
+	header_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	header_bar.tooltip_text = "Перетащите, чтобы переместить панель"
+	_style_tag(header_bar, "dragbar")
+	main_vbox.add_child(header_bar)
+
+	var header_row := HBoxContainer.new()
+	header_row.add_theme_constant_override("separation", 6)
+	header_bar.add_child(header_row)
+
+	var logo_label := Label.new()
+	logo_label.text = "✨ FMG"
+	logo_label.add_theme_font_override("font", FmgUiTheme.font_ui())
+	logo_label.add_theme_font_size_override("font_size", 13)
+	logo_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.95))
+	logo_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	header_row.add_child(logo_label)
+
 	var grip := Label.new()
-	grip.text = "≡"
+	grip.text = "━━━━━"
 	grip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	grip.add_theme_font_override("font", FmgUiTheme.mono())
+	grip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grip.add_theme_font_override("font", FmgUiTheme.font_ui())
+	grip.add_theme_font_size_override("font_size", 10)
+	grip.add_theme_color_override("font_color", Color(1, 1, 1, 0.28))
 	grip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	drag.add_child(grip)
-	box.add_child(drag)
-	drag.gui_input.connect(_on_drag_bar_input.bind(drag))
+	header_row.add_child(grip)
 
-	# tab bar
+	var close_button := Button.new()
+	close_button.text = "✕"
+	close_button.tooltip_text = "Свернуть панель (Tab или Esc)"
+	close_button.custom_minimum_size = Vector2(24, 24)
+	close_button.pressed.connect(hide_menu)
+	_style_tag(close_button, "button")
+	header_row.add_child(close_button)
+
+	header_bar.gui_input.connect(_on_drag_bar_input.bind(header_bar))
+
+	# --- Apple Segmented Tab Bar ---
+	var segmented_bar := PanelContainer.new()
+	_style_tag(segmented_bar, "segmented")
+	main_vbox.add_child(segmented_bar)
+
 	var tabs := HBoxContainer.new()
-	tabs.add_theme_constant_override("separation", 1)
-	box.add_child(tabs)
-	var hide_button := Button.new()
-	hide_button.text = "◄"
-	hide_button.tooltip_text = "Скрыть меню (Tab или Esc)"
-	hide_button.custom_minimum_size = Vector2(28, 0)
-	hide_button.pressed.connect(hide_menu)
-	_style_tag(hide_button, "tab")
-	tabs.add_child(hide_button)
+	tabs.add_theme_constant_override("separation", 2)
+	segmented_bar.add_child(tabs)
+
 	for tab_id: String in TAB_IDS:
 		var tab := Button.new()
-		tab.text = str(TAB_TITLES[tab_id])
-		tab.tooltip_text = "Открыть вкладку «%s»" % str(TAB_TITLES[tab_id])
-		tab.toggle_mode = false
+		tab.text = "%s %s" % [str(TAB_ICONS[tab_id]), str(TAB_TITLES[tab_id])]
+		tab.tooltip_text = "Вкладка «%s»" % str(TAB_TITLES[tab_id])
 		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tab.add_theme_font_size_override("font_size", 11)
 		tab.clip_text = true
@@ -233,19 +282,27 @@ func _build_menu() -> void:
 		tabs.add_child(tab)
 		tab_buttons[tab_id] = tab
 
-	# tab contents
+	# --- Tab Contents Container ---
+	var contents_area := PanelContainer.new()
+	contents_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_style_tag(contents_area, "card")
+	main_vbox.add_child(contents_area)
+
 	for tab_id: String in TAB_IDS:
 		var scroll := ScrollContainer.new()
 		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-		scroll.custom_minimum_size = Vector2(0, 560)
+		scroll.custom_minimum_size = Vector2(0, 440)
+		scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		scroll.visible = false
 		_style_tag(scroll, "scroll")
+
 		var content := VBoxContainer.new()
 		content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		content.add_theme_constant_override("separation", 4)
+		content.add_theme_constant_override("separation", 8)
 		scroll.add_child(content)
-		box.add_child(scroll)
+		contents_area.add_child(scroll)
 		tab_contents[tab_id] = scroll
+
 		match tab_id:
 			"layers":
 				_build_layers_tab(content)
@@ -258,23 +315,30 @@ func _build_menu() -> void:
 			"about":
 				_build_about_tab(content)
 
-	# sticked buttons
-	var sticked_sep := HSeparator.new()
-	box.add_child(sticked_sep)
+	# --- Apple Bottom Dock (Action pill row) ---
+	var dock := PanelContainer.new()
+	_style_tag(dock, "dock")
+	main_vbox.add_child(dock)
+
 	var sticked := HBoxContainer.new()
-	sticked.add_theme_constant_override("separation", 0)
+	sticked.add_theme_constant_override("separation", 4)
 	sticked.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_child(sticked)
+	dock.add_child(sticked)
+
 	var sticked_list: Array = [
-		["new", "Новая карта"], ["export", "Экспорт"], ["save", "Сохранить"],
-		["load", "Загрузить"], ["fit", "Обзор"], ["search", "Поиск"]
+		["new", "✦ Новая", "accent"],
+		["export", "⤓ Экспорт", "sticked"],
+		["save", "💾 Сохр.", "sticked"],
+		["load", "📂 Загр.", "sticked"],
+		["fit", "⛶ Обзор", "sticked"],
+		["search", "🔍 Поиск", "sticked"]
 	]
 	for entry: Array in sticked_list:
 		var button := Button.new()
 		button.text = str(entry[1])
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.tooltip_text = _sticked_tooltip(str(entry[0]))
-		_style_tag(button, "sticked")
+		_style_tag(button, str(entry[2]))
 		button.pressed.connect(_on_sticked_pressed.bind(str(entry[0])))
 		sticked.add_child(button)
 		button.add_theme_font_size_override("font_size", 11)
@@ -285,24 +349,32 @@ func _build_menu() -> void:
 func _sticked_tooltip(id: String) -> String:
 	match id:
 		"new":
-			return "Сгенерировать новую карту (F2)"
+			return "Сгенерировать новую карту со случайным сидом (F2)"
 		"export":
-			return "Выбрать формат для экспорта карты или данных"
+			return "Экспорт карты: PNG, SVG, CSV, GeoJSON, Высоты"
 		"save":
 			return "Сохранить карту в файл .map"
 		"load":
 			return "Загрузить карту из файла .map"
 		"fit":
-			return "Показать всю карту (0)"
+			return "Вписать всю карту в экран (0)"
 		"search":
-			return "Поиск по слоям и командам (Пробел)"
+			return "Поиск команд, слоёв и инструментов (Пробел)"
 	return ""
 
 
+# ---------------------------------------------------------------------------
+# Tab 1: Layers (Categorized Glass Cards)
+
 func _build_layers_tab(content: VBoxContainer) -> void:
-	_label(content, "Пресет слоёв:", "label", true)
+	# Preset Selector Card
+	var preset_card := _make_card(content)
+	_label(preset_card, "Пресет отображения:", "section_header", true)
+
 	var preset_row := HBoxContainer.new()
-	content.add_child(preset_row)
+	preset_row.add_theme_constant_override("separation", 6)
+	preset_card.add_child(preset_row)
+
 	preset_option = OptionButton.new()
 	preset_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_style_tag(preset_option, "select")
@@ -313,83 +385,165 @@ func _build_layers_tab(content: VBoxContainer) -> void:
 		apply_preset(str(preset_option.get_item_metadata(index))))
 	preset_row.add_child(preset_option)
 
-	_label(content, "Отображаемые слои:", "label", true)
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 4)
-	grid.add_theme_constant_override("v_separation", 3)
-	content.add_child(grid)
-	for layer: Dictionary in LAYERS:
-		var button := Button.new()
-		button.text = str(layer["label"])
-		button.toggle_mode = true
-		button.tooltip_text = "Показать или скрыть слой «%s»" % str(layer["label"])
-		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		_style_tag(button, "layer")
-		var prop: String = str(layer["prop"])
-		button.button_pressed = bool(view.get(prop))
-		button.toggled.connect(func(pressed: bool) -> void:
-			view.set(prop, pressed)
-			if prop == "show_rulers" and pressed:
-				view.ruler_points = PackedVector2Array()
-			view.queue_redraw()
-			_refresh_layer_button(button, pressed))
-		grid.add_child(button)
-		layer_buttons[str(layer["id"])] = button
-		_refresh_layer_button(button, button.button_pressed)
-	_tip(content, "Клик — переключить слой. Буквенные клавиши тоже переключают слои.")
-	_tip(content, "Пресет «Политическая» соответствует виду по умолчанию оригинала.")
+	# Quick Actions Row
+	var quick_row := HBoxContainer.new()
+	quick_row.add_theme_constant_override("separation", 4)
+	preset_card.add_child(quick_row)
 
+	var def_btn := Button.new()
+	def_btn.text = "✦ Стандарт"
+	def_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_tag(def_btn, "button")
+	def_btn.pressed.connect(func() -> void: apply_preset("political"))
+	quick_row.add_child(def_btn)
+
+	var all_btn := Button.new()
+	all_btn.text = "✓ Все"
+	all_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_tag(all_btn, "button")
+	all_btn.pressed.connect(_enable_all_layers)
+	quick_row.add_child(all_btn)
+
+	var clear_btn := Button.new()
+	clear_btn.text = "✕ Скрыть"
+	clear_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_tag(clear_btn, "button")
+	clear_btn.pressed.connect(_disable_all_layers)
+	quick_row.add_child(clear_btn)
+
+	# Categorized Layer Groups
+	for cat: Dictionary in LAYER_CATEGORIES:
+		var cat_card := _make_card(content)
+		_label(cat_card, str(cat["title"]), "section_header", true)
+
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 6)
+		grid.add_theme_constant_override("v_separation", 4)
+		cat_card.add_child(grid)
+
+		for layer_id: String in cat["ids"]:
+			var layer_data: Dictionary = _find_layer_data(layer_id)
+			if layer_data.is_empty():
+				continue
+			var button := Button.new()
+			button.text = str(layer_data["label"])
+			button.toggle_mode = true
+			button.tooltip_text = "Слой «%s»" % str(layer_data["label"])
+			button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			_style_tag(button, "layer")
+			var prop: String = str(layer_data["prop"])
+			button.button_pressed = bool(view.get(prop))
+			button.toggled.connect(func(pressed: bool) -> void:
+				view.set(prop, pressed)
+				if prop == "show_rulers" and pressed:
+					view.ruler_points = PackedVector2Array()
+				view.queue_redraw()
+				_refresh_layer_button(button, pressed))
+			grid.add_child(button)
+			layer_buttons[layer_id] = button
+			_refresh_layer_button(button, button.button_pressed)
+
+
+func _find_layer_data(id: String) -> Dictionary:
+	for layer: Dictionary in LAYERS:
+		if str(layer["id"]) == id:
+			return layer
+	return {}
+
+
+func _enable_all_layers() -> void:
+	for layer: Dictionary in LAYERS:
+		var prop: String = str(layer["prop"])
+		view.set(prop, true)
+		if layer_buttons.has(str(layer["id"])):
+			var btn: Button = layer_buttons[str(layer["id"])]
+			btn.button_pressed = true
+			_refresh_layer_button(btn, true)
+	view.queue_redraw()
+
+
+func _disable_all_layers() -> void:
+	for layer: Dictionary in LAYERS:
+		var prop: String = str(layer["prop"])
+		view.set(prop, false)
+		if layer_buttons.has(str(layer["id"])):
+			var btn: Button = layer_buttons[str(layer["id"])]
+			btn.button_pressed = false
+			_refresh_layer_button(btn, false)
+	view.queue_redraw()
+
+
+# ---------------------------------------------------------------------------
+# Tab 2: Style
 
 func _build_style_tab(content: VBoxContainer) -> void:
-	_label(content, "Цвета карты (применяются сразу):", "label", true)
-	_color_row(content, "Океан", "style_ocean")
-	_color_row(content, "Глубины", "style_ocean_deep")
-	_color_row(content, "Суша", "style_land")
-	_color_row(content, "Озёра", "style_lake")
-	_color_row(content, "Реки", "style_river")
-	_color_row(content, "Берег", "style_coast")
-	_color_row(content, "Дороги", "style_road")
-	_color_row(content, "Границы", "style_border")
-	_label(content, "Линии и подписи:", "label", true)
-	_spin_row(content, "Толщина берега", 0.2, 4.0, 0.1, view.style_coast_width, func(v: float) -> void:
+	var color_card := _make_card(content)
+	_label(color_card, "🎨 Цветовая палитра карты:", "section_header", true)
+
+	var color_grid := GridContainer.new()
+	color_grid.columns = 2
+	color_grid.add_theme_constant_override("h_separation", 8)
+	color_grid.add_theme_constant_override("v_separation", 4)
+	color_card.add_child(color_grid)
+
+	_color_grid_item(color_grid, "Океан", "style_ocean")
+	_color_grid_item(color_grid, "Глубины", "style_ocean_deep")
+	_color_grid_item(color_grid, "Суша", "style_land")
+	_color_grid_item(color_grid, "Озёра", "style_lake")
+	_color_grid_item(color_grid, "Реки", "style_river")
+	_color_grid_item(color_grid, "Берег", "style_coast")
+	_color_grid_item(color_grid, "Дороги", "style_road")
+	_color_grid_item(color_grid, "Границы", "style_border")
+
+	var line_card := _make_card(content)
+	_label(line_card, "📏 Линии и масштаб надписей:", "section_header", true)
+	_spin_row(line_card, "Толщина берега", 0.2, 4.0, 0.1, view.style_coast_width, func(v: float) -> void:
 		view.style_coast_width = v
 		view.queue_redraw())
-	_spin_row(content, "Толщина границ", 0.2, 6.0, 0.1, view.style_border_width, func(v: float) -> void:
+	_spin_row(line_card, "Толщина границ", 0.2, 6.0, 0.1, view.style_border_width, func(v: float) -> void:
 		view.style_border_width = v
 		view.queue_redraw())
-	_spin_row(content, "Толщина дорог", 0.2, 6.0, 0.1, view.style_road_width, func(v: float) -> void:
+	_spin_row(line_card, "Толщина дорог", 0.2, 6.0, 0.1, view.style_road_width, func(v: float) -> void:
 		view.style_road_width = v
 		view.queue_redraw())
-	_spin_row(content, "Масштаб подписей", 0.25, 4.0, 0.05, view.style_label_scale, func(v: float) -> void:
+	_spin_row(line_card, "Масштаб подписей", 0.25, 4.0, 0.05, view.style_label_scale, func(v: float) -> void:
 		view.style_label_scale = v
 		view.queue_redraw())
-	_tip(content, "Базовые слои окрашиваются мгновенно — геометрия не пересчитывается.")
 
+	_tip(content, "Цвета и толщины применяются мгновенно без повторного расчёта геометрии.")
+
+
+# ---------------------------------------------------------------------------
+# Tab 3: Options (Map Settings & Generation)
 
 func _build_options_tab(content: VBoxContainer) -> void:
-	_label(content, "Настройки карты (для новой карты):", "label", true)
+	var geom_card := _make_card(content)
+	_label(geom_card, "🗺️ Геометрия мира:", "section_header", true)
+
 	var size_row := HBoxContainer.new()
-	content.add_child(size_row)
+	size_row.add_theme_constant_override("separation", 6)
+	geom_card.add_child(size_row)
 	_label(size_row, "Размер", "label")
-	map_width_spin = _make_spin(240, 8192, 1, sim.map_width, 90.0)
-	map_height_spin = _make_spin(135, 8192, 1, sim.map_height, 90.0)
+	map_width_spin = _make_spin(240, 8192, 1, sim.map_width, 86.0)
+	map_height_spin = _make_spin(135, 8192, 1, sim.map_height, 86.0)
 	size_row.add_child(map_width_spin)
 	_label(size_row, "×", "label")
 	size_row.add_child(map_height_spin)
 
 	var seed_row := HBoxContainer.new()
-	content.add_child(seed_row)
+	seed_row.add_theme_constant_override("separation", 6)
+	geom_card.add_child(seed_row)
 	seed_edit = LineEdit.new()
 	seed_edit.text = sim.seed_value
-	seed_edit.placeholder_text = "Сид"
+	seed_edit.placeholder_text = "Сид карты"
 	seed_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	seed_edit.tooltip_text = "Сид карты: одно и то же число даёт одну и ту же карту (при равных прочих настройках)"
+	seed_edit.tooltip_text = "Сид генерации (число)"
 	_style_tag(seed_edit, "field")
 	seed_row.add_child(seed_edit)
 	var dice := Button.new()
 	dice.text = "🎲"
-	dice.tooltip_text = "Случайный сид"
+	dice.tooltip_text = "Сгенерировать случайный сид"
 	_style_tag(dice, "button")
 	dice.pressed.connect(func() -> void:
 		seed_edit.text = str(randi() % 1000000000))
@@ -399,9 +553,9 @@ func _build_options_tab(content: VBoxContainer) -> void:
 	for d: Array in DENSITIES:
 		density_option.add_item("%s ячеек" % str(d[1]), int(d[0]))
 	density_option.select(3)
-	density_option.tooltip_text = "Число точек графа; сильно влияет на скорость (10 000 — рекомендуемое)"
+	density_option.tooltip_text = "Число точек графа Вороного (10 000 — баланс качества и скорости)"
 	_style_tag(density_option, "select")
-	_option_row(content, "Детализация", density_option)
+	_option_row(geom_card, "Детализация", density_option)
 
 	template_option = OptionButton.new()
 	var templates: Array = HeightmapTemplates.TEMPLATES.keys()
@@ -412,13 +566,17 @@ func _build_options_tab(content: VBoxContainer) -> void:
 		template_option.add_item(HeightmapTemplates.template_name(tid), t_index)
 		template_option.set_item_metadata(t_index, tid)
 		t_index += 1
-	template_option.select(1 + 3) # continents by default
-	template_option.tooltip_text = "Шаблон рельефа для новой карты"
+	template_option.select(1 + 3)
+	template_option.tooltip_text = "Шаблон высотной карты"
 	_style_tag(template_option, "select")
-	_option_row(content, "Шаблон", template_option)
+	_option_row(geom_card, "Шаблон", template_option)
+
+	var civ_card := _make_card(content)
+	_label(civ_card, "🏛️ Население и державы:", "section_header", true)
 
 	cultures_spin = _make_spin(1, 32, 1, float(sim.cultures_limit))
-	_spin_control_row(content, "Культур", cultures_spin)
+	_spin_control_row(civ_card, "Культур", cultures_spin)
+
 	cultures_set_option = OptionButton.new()
 	var set_index: int = 0
 	for set_id: String in FmgCultures.CULTURE_SETS:
@@ -428,186 +586,778 @@ func _build_options_tab(content: VBoxContainer) -> void:
 		if set_id == sim.cultures_set:
 			cultures_set_option.select(set_index)
 		set_index += 1
-	cultures_set_option.tooltip_text = "Набор культур: влияет на имена и размещение"
 	_style_tag(cultures_set_option, "select")
-	_option_row(content, "Набор культур", cultures_set_option)
+	_option_row(civ_card, "Набор культур", cultures_set_option)
 
 	states_spin = _make_spin(0, 100, 1, float(sim.states_limit))
-	_spin_control_row(content, "Государств", states_spin)
+	_spin_control_row(civ_card, "Государств", states_spin)
+
 	religions_spin = _make_spin(0, 24, 1, float(sim.religions_limit))
-	_spin_control_row(content, "Религий", religions_spin)
+	_spin_control_row(civ_card, "Религий", religions_spin)
+
 	provinces_ratio_spin = _make_spin(0, 100, 5, sim.provinces_ratio)
-	provinces_ratio_spin.tooltip_text = "Доля городов государства, ставших центрами провинций"
-	_spin_control_row(content, "Провинции %", provinces_ratio_spin)
+	_spin_control_row(civ_card, "Провинции %", provinces_ratio_spin)
 
 	burgs_check = CheckButton.new()
 	burgs_check.text = "Города: автоматически"
 	burgs_check.button_pressed = sim.burgs_limit < 0
 	_style_tag(burgs_check, "check")
-	content.add_child(burgs_check)
+	civ_card.add_child(burgs_check)
 
 	distance_scale_spin = _make_spin(0.01, 20.0, 0.1, view.distance_scale)
-	distance_scale_spin.tooltip_text = "Масштаб расстояний: километров на пиксель карты (линейка и масштабная линейка)"
-	_spin_control_row(content, "Км / пиксель", distance_scale_spin)
+	_spin_control_row(civ_card, "Км / пиксель", distance_scale_spin)
 	distance_scale_spin.value_changed.connect(func(v: float) -> void:
 		view.distance_scale = v
 		view.queue_redraw())
 
-	_label(content, "Интерфейс:", "label", true)
-	var theme_row := HBoxContainer.new()
-	content.add_child(theme_row)
-	_label(theme_row, "Цвет темы", "label")
-	var hue_slider := HSlider.new()
-	hue_slider.min_value = 0.0
-	hue_slider.max_value = 359.0
-	hue_slider.step = 1.0
-	hue_slider.value = 332.0
-	hue_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hue_slider.tooltip_text = "Оттенок меню и диалогов"
-	_style_tag(hue_slider, "slider")
-	hue_slider.value_changed.connect(func(v: float) -> void: ui_theme.set_hue(v))
-	theme_row.add_child(hue_slider)
-	var color_picker := ColorPickerButton.new()
-	color_picker.custom_minimum_size = Vector2(44, 22)
-	color_picker.color = ui_theme.theme_color
-	color_picker.color_changed.connect(func(color: Color) -> void: ui_theme.set_theme(color, ui_theme.transparency))
-	theme_row.add_child(color_picker)
-	_spin_row(content, "Прозрачность %", 0.0, 100.0, 1.0, ui_theme.transparency, func(v: float) -> void:
-		ui_theme.set_theme(ui_theme.theme_color, v))
+	# Climate Card
+	var climate_card := _make_card(content)
+	_label(climate_card, "☀️ Климат и ветра:", "section_header", true)
+	climate_equator_spin = _climate_row(climate_card, "Экватор °C", -10.0, 40.0, sim.climate_equator, func(v: float) -> void: sim.climate_equator = v)
+	climate_north_spin = _climate_row(climate_card, "Сев. полюс °C", -60.0, 15.0, sim.climate_north_pole, func(v: float) -> void: sim.climate_north_pole = v)
+	climate_south_spin = _climate_row(climate_card, "Юж. полюс °C", -60.0, 15.0, sim.climate_south_pole, func(v: float) -> void: sim.climate_south_pole = v)
+	climate_precip_spin = _climate_row(climate_card, "Осадки %", 0.0, 400.0, sim.climate_precipitation, func(v: float) -> void: sim.climate_precipitation = v)
 
-	_label(content, "Климат (пересчёт кнопкой ниже):", "label", true)
-	climate_equator_spin = _climate_row(content, "Экватор °C", -10.0, 40.0, sim.climate_equator, func(v: float) -> void: sim.climate_equator = v)
-	climate_north_spin = _climate_row(content, "Сев. полюс °C", -60.0, 15.0, sim.climate_north_pole, func(v: float) -> void: sim.climate_north_pole = v)
-	climate_south_spin = _climate_row(content, "Юж. полюс °C", -60.0, 15.0, sim.climate_south_pole, func(v: float) -> void: sim.climate_south_pole = v)
-	climate_precip_spin = _climate_row(content, "Осадки %", 0.0, 400.0, sim.climate_precipitation, func(v: float) -> void: sim.climate_precipitation = v)
 	wind_spins = []
 	var wind_names: Array = ["Ветер N пол.", "Ветер N ум.", "Ветер троп. N", "Ветер троп. S", "Ветер S ум.", "Ветер S пол."]
 	for i: int in 6:
 		var wind_spin := _make_spin(0.0, 360.0, 5.0, float(sim.climate_winds[i]) if i < sim.climate_winds.size() else 0.0)
-		wind_spin.tooltip_text = "Направление преобладающего ветра пояса, в градусах"
-		_spin_control_row(content, str(wind_names[i]), wind_spin)
+		_spin_control_row(climate_card, str(wind_names[i]), wind_spin)
 		wind_spin.value_changed.connect(_on_wind_changed.bind(i))
 		wind_spins.append(wind_spin)
+
 	var climate_btn := Button.new()
 	climate_btn.text = "Применить климат"
-	climate_btn.tooltip_text = "Пересчитать температуру, осадки и всё ниже по конвейеру"
-	_style_tag(climate_btn, "accent")
+	climate_btn.tooltip_text = "Пересчитать климат, реки, биомы и государства"
+	_style_tag(climate_btn, "button")
 	climate_btn.pressed.connect(func() -> void: climate_apply_requested.emit())
-	content.add_child(climate_btn)
+	climate_card.add_child(climate_btn)
 
+	# Interface Theme Card
+	var theme_card := _make_card(content)
+	_label(theme_card, "✨ Оформление Liquid Glass:", "section_header", true)
+	var theme_row := HBoxContainer.new()
+	theme_row.add_theme_constant_override("separation", 8)
+	theme_card.add_child(theme_row)
+	_label(theme_row, "Оттенок", "label")
+	var hue_slider := HSlider.new()
+	hue_slider.min_value = 0.0
+	hue_slider.max_value = 359.0
+	hue_slider.step = 1.0
+	hue_slider.value = 228.0
+	hue_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_tag(hue_slider, "slider")
+	hue_slider.value_changed.connect(func(v: float) -> void: ui_theme.set_hue(v))
+	theme_row.add_child(hue_slider)
+	var color_picker := ColorPickerButton.new()
+	color_picker.custom_minimum_size = Vector2(38, 24)
+	color_picker.color = ui_theme.theme_color
+	color_picker.color_changed.connect(func(color: Color) -> void: ui_theme.set_theme(color, ui_theme.transparency))
+	theme_row.add_child(color_picker)
+	_spin_row(theme_card, "Прозрачность %", 0.0, 90.0, 1.0, ui_theme.transparency, func(v: float) -> void:
+		ui_theme.set_theme(ui_theme.theme_color, v))
+
+	# Big Call-to-Action button
 	var generate := Button.new()
-	generate.text = "Сгенерировать карту"
-	generate.custom_minimum_size = Vector2(0, 40)
-	generate.tooltip_text = "Создать новую карту с текущими настройками (F2)"
+	generate.text = "✦ Сгенерировать карту (F2)"
+	generate.custom_minimum_size = Vector2(0, 44)
+	generate.tooltip_text = "Создать новую карту с текущими параметрами (F2)"
 	_style_tag(generate, "accent")
-	generate.pressed.connect(func() -> void: generate_requested.emit())
+	generate.pressed.connect(request_new_map)
 	content.add_child(generate)
 
 
+# ---------------------------------------------------------------------------
+# Tab 4: Tools
+
 func _build_tools_tab(content: VBoxContainer) -> void:
-	_label(content, "Редактирование:", "sep", true)
+	var edit_card := _make_card(content)
+	_label(edit_card, "🖌️ Кисть рельефа и линейка:", "section_header", true)
 	brush_option = OptionButton.new()
 	brush_option.add_item("Кисть: выключена", -1)
 	brush_option.add_item("Поднять рельеф", 0)
 	brush_option.add_item("Опустить рельеф", 1)
 	brush_option.add_item("Сгладить", 2)
 	brush_option.select(0)
-	brush_option.tooltip_text = "Кисть высот: применяется к сетке, затем весь конвейер пересчитывается"
 	_style_tag(brush_option, "select")
-	_option_row(content, "Кисть", brush_option)
+	_option_row(edit_card, "Режим кисти", brush_option)
+
 	brush_size = HSlider.new()
 	brush_size.min_value = 10.0
 	brush_size.max_value = 150.0
 	brush_size.value = 45.0
-	brush_size.tooltip_text = "Радиус кисти в пикселях"
 	_style_tag(brush_size, "slider")
 	var brush_row := HBoxContainer.new()
-	content.add_child(brush_row)
-	_label(brush_row, "Размер", "label")
+	edit_card.add_child(brush_row)
+	_label(brush_row, "Радиус кисти", "label")
+	brush_size.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	brush_row.add_child(brush_size)
 
 	ruler_check = CheckButton.new()
-	ruler_check.text = "Линейка активна"
-	ruler_check.tooltip_text = "Клик по карте — добавить точку; ПКМ или Esc — сбросить. Показывает расстояние"
+	ruler_check.text = "Линейка измерений активна"
 	_style_tag(ruler_check, "check")
 	ruler_check.toggled.connect(func(pressed: bool) -> void:
 		view.show_rulers = pressed
 		if pressed:
 			view.ruler_points = PackedVector2Array()
 		view.queue_redraw())
-	content.add_child(ruler_check)
+	edit_card.add_child(ruler_check)
 
-	_label(content, "Обзоры:", "sep", true)
+	var table_card := _make_card(content)
+	_label(table_card, "📊 Обзоры и таблицы данных:", "section_header", true)
 	var overview_grid := GridContainer.new()
 	overview_grid.columns = 3
-	overview_grid.add_theme_constant_override("h_separation", 4)
-	overview_grid.add_theme_constant_override("v_separation", 4)
-	content.add_child(overview_grid)
-	for entry: Array in [["burgs", "Города"], ["states", "Государства"], ["rivers", "Реки"], ["markers", "Маркеры"], ["markets", "Рынки"], ["diplomacy", "Дипломатия"]]:
+	overview_grid.add_theme_constant_override("h_separation", 6)
+	overview_grid.add_theme_constant_override("v_separation", 6)
+	table_card.add_child(overview_grid)
+	for entry: Array in [
+		["burgs", "🏙️ Города"], ["states", "🚩 Державы"], ["rivers", "🌊 Реки"],
+		["markers", "📍 Маркеры"], ["markets", "⚖️ Рынки"], ["diplomacy", "🤝 Связи"]
+	]:
 		var button := Button.new()
 		button.text = str(entry[1])
-		button.tooltip_text = "Открыть таблицу «%s»" % str(entry[1])
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_style_tag(button, "button")
 		button.pressed.connect(func() -> void: overview_requested.emit(str(entry[0])))
 		overview_grid.add_child(button)
 
-	_label(content, "Экспорт:", "sep", true)
+	var export_card := _make_card(content)
+	_label(export_card, "💾 Экспорт карты и данных:", "section_header", true)
 	var export_grid := GridContainer.new()
 	export_grid.columns = 3
-	export_grid.add_theme_constant_override("h_separation", 4)
-	export_grid.add_theme_constant_override("v_separation", 4)
-	content.add_child(export_grid)
-	for entry: Array in [["png", "PNG"], ["svg", "SVG"], ["csv", "CSV"], ["geojson", "GeoJSON"], ["height", "Высоты"]]:
+	export_grid.add_theme_constant_override("h_separation", 6)
+	export_grid.add_theme_constant_override("v_separation", 6)
+	export_card.add_child(export_grid)
+	for entry: Array in [
+		["png", "🖼️ PNG"], ["svg", "📐 SVG"], ["csv", "📊 CSV"],
+		["geojson", "🌐 GeoJSON"], ["height", "⛰️ Высоты"]
+	]:
 		var button := Button.new()
 		button.text = str(entry[1])
-		button.tooltip_text = "Экспортировать карту или данные: %s" % str(entry[1])
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_style_tag(button, "button")
 		button.pressed.connect(func() -> void: export_requested.emit(str(entry[0])))
 		export_grid.add_child(button)
 
-	_label(content, "Пересчёт:", "sep", true)
+	var regen_card := _make_card(content)
 	var regen := Button.new()
-	regen.text = "Пересчитать карту с тем же сидом"
-	regen.tooltip_text = "Повторить генерацию с текущими настройками (например, после смены шаблона)"
+	regen.text = "🔄 Пересчитать карту с тем же сидом"
+	regen.tooltip_text = "Повторить генерацию с текущими настройками"
 	_style_tag(regen, "button")
 	regen.pressed.connect(func() -> void: generate_requested.emit())
-	content.add_child(regen)
-
-
-func _build_about_tab(content: VBoxContainer) -> void:
-	var title := Label.new()
-	title.text = "FANTASY MAP GENERATOR"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 16)
-	title.add_theme_font_override("font", FmgUiTheme.mono())
-	title.add_theme_color_override("font_color", ui_theme.dark_solid if ui_theme != null else Color("#5e4452"))
-	content.add_child(title)
-	var subtitle := Label.new()
-	subtitle.text = "Порт для Godot 4 · версия 1.0"
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.add_theme_font_size_override("font_size", 11)
-	subtitle.add_theme_font_override("font", FmgUiTheme.mono())
-	_style_tag(subtitle, "tip")
-	content.add_child(subtitle)
-	var about := Label.new()
-	about.text = "Процедурный генератор фэнтезийных карт: рельеф, реки, биомы, климат, культуры, государства, провинции, религии, города, дороги, рынки и торговля, армии, дипломатия, маркеры, зоны и геральдика.\n\nЭто свободный порт генератора Azgaar на GDScript (Godot 4). Алгоритмы и данные перенесены из оригинального проекта; интерфейс повторяет меню оригинала.\n\nОригинал: github.com/Azgaar/Fantasy-Map-Generator (Azgaar, лицензия MIT)."
-	about.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	about.custom_minimum_size = Vector2(MENU_WIDTH - 34.0, 0)
-	about.add_theme_font_override("font", FmgUiTheme.mono())
-	about.add_theme_color_override("font_color", Color("#31272c"))
-	content.add_child(about)
-	_label(content, "Горячие клавиши:", "sep", true)
-	var hotkeys := Label.new()
-	hotkeys.text = "Tab — показать/скрыть меню\nF2 — новая карта\n0 — показать всю карту\nПробел — поиск\nEsc — закрыть диалоги\nКолесо — зум; перетаскивание (ЛКМ/ПКМ) — панорама\nB, S, C, R, P, T, N и другие буквы — переключение слоёв"
-	hotkeys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hotkeys.custom_minimum_size = Vector2(MENU_WIDTH - 34.0, 0)
-	hotkeys.add_theme_font_override("font", FmgUiTheme.mono())
-	_style_tag(hotkeys, "tip")
-	content.add_child(hotkeys)
+	regen_card.add_child(regen)
 
 
 # ---------------------------------------------------------------------------
-# Small builders
+# Tab 5: About
+
+func _build_about_tab(content: VBoxContainer) -> void:
+	var hero_card := _make_card(content)
+	var title := Label.new()
+	title.text = "Fantasy Map Generator"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 17)
+	title.add_theme_font_override("font", FmgUiTheme.font_ui())
+	title.add_theme_color_override("font_color", Color.WHITE)
+	hero_card.add_child(title)
+
+	var subtitle := Label.new()
+	subtitle.text = "Godot 4 · Liquid Glass Edition"
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.add_theme_font_size_override("font_size", 11)
+	_style_tag(subtitle, "tip")
+	hero_card.add_child(subtitle)
+
+	var desc_card := _make_card(content)
+	var about := Label.new()
+	about.text = "Процедурный генератор фэнтезийных карт: рельеф, реки, биомы, климат, культуры, государства, провинции, религии, города, дороги, рынки и торговля, армии, дипломатия, маркеры, зоны и геральдика.\n\nИнтерфейс выполнен в современном стиле Apple Liquid Glass с полупрозрачным матовым стеклом и плавающими панелями."
+	about.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	about.add_theme_font_override("font", FmgUiTheme.font_ui())
+	about.add_theme_font_size_override("font_size", 12)
+	about.add_theme_color_override("font_color", Color(0.9, 0.92, 0.96))
+	desc_card.add_child(about)
+
+	var hotkey_card := _make_card(content)
+	_label(hotkey_card, "⌨️ Горячие клавиши:", "section_header", true)
+	var hotkeys := Label.new()
+	hotkeys.text = "Tab — показать / скрыть меню\nF2 — новая карта со случайным сидом\n0 — вписать карту в видимую область\nПробел — поиск по слоям и командам (Spotlight)\nEsc — закрыть активный диалог\nКолесо мыши — зум; ЛКМ / ПКМ — панорама\nB, S, C, R, P, T, N и другие — быстрое переключение слоёв"
+	hotkeys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hotkeys.add_theme_font_override("font", FmgUiTheme.font_ui())
+	_style_tag(hotkeys, "tip")
+	hotkey_card.add_child(hotkeys)
+
+
+# ---------------------------------------------------------------------------
+# Floating Overlays & Helpers
+
+func _make_card(parent: Control) -> PanelContainer:
+	var card := PanelContainer.new()
+	_style_tag(card, "card")
+	parent.add_child(card)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	card.add_child(box)
+	return box
+
+
+func _build_export_popup() -> void:
+	export_popup = PanelContainer.new()
+	export_popup.visible = false
+	_style_tag(export_popup, "panel")
+	add_child(export_popup)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	export_popup.add_child(box)
+	for entry: Array in [
+		["png", "🖼️ Изображение PNG"], ["svg", "📐 Векторная карта SVG"],
+		["csv", "📊 Данные ячеек CSV"], ["geojson", "🌐 Геоданные GeoJSON"],
+		["height", "⛰️ Высотная карта PNG"]
+	]:
+		var button := Button.new()
+		button.text = str(entry[1])
+		_style_tag(button, "button")
+		button.pressed.connect(func() -> void:
+			export_popup.visible = false
+			export_requested.emit(str(entry[0])))
+		box.add_child(button)
+
+
+## Spotlight-style command palette (Space).
+func _build_omnibar() -> void:
+	omnibar = PanelContainer.new()
+	omnibar.visible = false
+	omnibar.custom_minimum_size = Vector2(440, 0)
+	_style_tag(omnibar, "panel")
+	add_child(omnibar)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	omnibar.add_child(box)
+
+	omnibar_edit = LineEdit.new()
+	omnibar_edit.placeholder_text = "🔍 Поиск слоёв, инструментов и команд…"
+	_style_tag(omnibar_edit, "field")
+	omnibar_edit.add_theme_font_override("font", FmgUiTheme.font_ui())
+	omnibar_edit.text_changed.connect(_refresh_omnibar)
+	box.add_child(omnibar_edit)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 260)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_style_tag(scroll, "scroll")
+	box.add_child(scroll)
+
+	omnibar_results = VBoxContainer.new()
+	omnibar_results.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	omnibar_results.add_theme_constant_override("separation", 3)
+	scroll.add_child(omnibar_results)
+
+
+## Frosted glass loading overlay.
+func _build_loading_overlay() -> void:
+	loading_overlay = Control.new()
+	loading_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	loading_overlay.visible = false
+	loading_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(loading_overlay)
+
+	var bg := ColorRect.new()
+	bg.color = Color(0.06, 0.08, 0.12, 0.88)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	loading_overlay.add_child(bg)
+
+	var center_card := PanelContainer.new()
+	center_card.set_anchors_preset(Control.PRESET_CENTER)
+	center_card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	center_card.grow_vertical = Control.GROW_DIRECTION_BOTH
+	center_card.custom_minimum_size = Vector2(360, 280)
+	_style_tag(center_card, "panel")
+	center_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	loading_overlay.add_child(center_card)
+
+	var center := VBoxContainer.new()
+	center.add_theme_constant_override("separation", 12)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center_card.add_child(center)
+
+	var rose := Control.new()
+	rose.custom_minimum_size = Vector2(120, 120)
+	rose.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.add_child(rose)
+
+	var title := Label.new()
+	title.text = "Fantasy Map Generator"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_font_override("font", FmgUiTheme.font_ui())
+	title.add_theme_color_override("font_color", Color.WHITE)
+	center.add_child(title)
+
+	loading_stage_label = Label.new()
+	loading_stage_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	loading_stage_label.add_theme_font_size_override("font_size", 14)
+	loading_stage_label.add_theme_font_override("font", FmgUiTheme.font_ui())
+	loading_stage_label.add_theme_color_override("font_color", Color(0.85, 0.89, 0.98))
+	loading_stage_label.text = "Генерация мира…"
+	center.add_child(loading_stage_label)
+
+	loading_progress = ProgressBar.new()
+	loading_progress.min_value = 0.0
+	loading_progress.max_value = 1.0
+	loading_progress.show_percentage = false
+	loading_progress.custom_minimum_size = Vector2(300, 6)
+	center.add_child(loading_progress)
+
+	rose.draw.connect(_draw_loading_rose.bind(rose))
+	rose.set_meta("start_ms", Time.get_ticks_msec())
+
+
+func _draw_loading_rose(rose: Control) -> void:
+	var center := rose.size / 2.0
+	var rotation_angle := TAU * float((Time.get_ticks_msec() - int(rose.get_meta("start_ms", 0))) % 16000) / 16000.0
+	var dark := Color("#202838")
+	var light := Color("#f0f4fc")
+	var radius := minf(center.x, center.y) * 0.90
+	rose.draw_arc(center, radius, 0.0, TAU, 56, Color(1, 1, 1, 0.35), 1.5, true)
+	for k: int in 16:
+		var major: bool = k % 2 == 0
+		var angle: float = rotation_angle - PI / 2.0 + TAU * float(k) / 16.0
+		var length: float = radius * (0.92 if major else 0.5)
+		var half_width: float = TAU / 16.0 * 0.55
+		var tip := center + Vector2(cos(angle), sin(angle)) * length
+		var left := center + Vector2(cos(angle - half_width), sin(angle - half_width)) * radius * 0.1
+		var right := center + Vector2(cos(angle + half_width), sin(angle + half_width)) * radius * 0.1
+		var tone := dark if k % 4 == 0 else light
+		if major:
+			rose.draw_colored_polygon(PackedVector2Array([center, tip, left]), tone)
+			rose.draw_colored_polygon(PackedVector2Array([center, tip, right]), Color(tone, 0.6))
+		else:
+			rose.draw_colored_polygon(PackedVector2Array([center, tip, left]), Color(tone, 0.75))
+			rose.draw_colored_polygon(PackedVector2Array([center, tip, right]), Color(tone, 0.4))
+	rose.draw_circle(center, radius * 0.08, dark)
+	rose.draw_circle(center, radius * 0.04, light)
+
+
+## Floating capsule status bar docked at bottom left.
+func _build_status_bar() -> void:
+	var bar := PanelContainer.new()
+	bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	bar.offset_left = 16.0
+	bar.offset_right = -16.0
+	bar.offset_bottom = -12.0
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_style_tag(bar, "dock")
+	add_child(bar)
+
+	var box := VBoxContainer.new()
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(box)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(row)
+
+	status_label = Label.new()
+	status_label.text = "● Готов к генерации"
+	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	status_label.add_theme_font_override("font", FmgUiTheme.font_ui())
+	status_label.add_theme_font_size_override("font_size", 12)
+	status_label.add_theme_color_override("font_color", Color("#e8ecf8"))
+	status_label.clip_text = true
+	status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(status_label)
+
+	zoom_label = Label.new()
+	zoom_label.text = "100%"
+	zoom_label.add_theme_font_override("font", FmgUiTheme.mono())
+	zoom_label.add_theme_font_size_override("font_size", 12)
+	zoom_label.add_theme_color_override("font_color", Color("#a0acc4"))
+	zoom_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(zoom_label)
+
+	progress_bar = ProgressBar.new()
+	progress_bar.min_value = 0.0
+	progress_bar.max_value = 1.0
+	progress_bar.show_percentage = false
+	progress_bar.custom_minimum_size = Vector2(0, 4)
+	progress_bar.visible = false
+	progress_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(progress_bar)
+
+
+# ---------------------------------------------------------------------------
+# Behavior & Handlers
+
+func _process(_delta: float) -> void:
+	if loading_overlay != null and loading_overlay.visible:
+		for child in loading_overlay.get_children():
+			if child is PanelContainer:
+				var vbox: VBoxContainer = child.get_child(0) as VBoxContainer
+				if vbox != null and vbox.get_child_count() > 0:
+					(vbox.get_child(0) as Control).queue_redraw()
+
+
+func show_menu() -> void:
+	menu.visible = true
+	trigger_box.visible = false
+
+
+func hide_menu() -> void:
+	menu.visible = false
+	export_popup.visible = false
+	trigger_box.visible = true
+
+
+func is_menu_visible() -> bool:
+	return menu != null and menu.visible
+
+
+func toggle_menu() -> void:
+	if is_menu_visible():
+		hide_menu()
+	else:
+		show_menu()
+
+
+func select_tab(tab_id: String) -> void:
+	for id: String in TAB_IDS:
+		(tab_contents[id] as ScrollContainer).visible = id == tab_id
+		_style_tag(tab_buttons[id], "tab_active" if id == tab_id else "tab")
+	if ui_theme != null:
+		ui_theme.apply_style(menu)
+
+
+func _on_drag_bar_input(event: InputEvent, _bar: Control) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			set_meta("drag_offset", menu.position - (event as InputEventMouseButton).global_position)
+		else:
+			set_meta("drag_offset", null)
+	elif event is InputEventMouseMotion and get_meta("drag_offset", null) != null:
+		var offset: Vector2 = get_meta("drag_offset")
+		var size: Vector2 = get_viewport_rect().size
+		var target: Vector2 = (event as InputEventMouseMotion).global_position + offset
+		menu.position = Vector2(
+			clampf(target.x, 0.0, maxf(size.x - 80.0, 0.0)),
+			clampf(target.y, 0.0, maxf(size.y - 80.0, 0.0)))
+
+
+func request_new_map() -> void:
+	if _busy:
+		return
+	if seed_edit != null:
+		seed_edit.text = str(randi() % 1000000000)
+	generate_requested.emit()
+
+
+func _on_sticked_pressed(id: String) -> void:
+	match id:
+		"new":
+			request_new_map()
+		"export":
+			if export_button != null:
+				export_popup.position = export_button.global_position + Vector2(0, 30)
+				export_popup.visible = not export_popup.visible
+		"save":
+			save_requested.emit()
+		"load":
+			load_requested.emit()
+		"fit":
+			fit_requested.emit()
+		"search":
+			_toggle_omnibar()
+
+
+func open_omnibar() -> void:
+	omnibar.position = menu.position
+	omnibar_edit.text = ""
+	_refresh_omnibar("")
+	omnibar.visible = true
+	omnibar_edit.grab_focus()
+
+
+func close_popups() -> void:
+	if export_popup != null:
+		export_popup.visible = false
+	if omnibar != null:
+		omnibar.visible = false
+
+
+func _toggle_omnibar() -> void:
+	if omnibar.visible:
+		omnibar.visible = false
+	else:
+		open_omnibar()
+
+
+func _refresh_omnibar(query: String) -> void:
+	for child in omnibar_results.get_children():
+		child.queue_free()
+	var needle: String = query.strip_edges().to_lower()
+	var actions: Array = _collect_actions()
+	var count: int = 0
+	for action: Dictionary in actions:
+		var title: String = str(action["title"])
+		if not needle.is_empty() and not title.to_lower().contains(needle):
+			continue
+		var btn := Button.new()
+		btn.text = title
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_style_tag(btn, "button")
+		var run_callable: Callable = action["run"]
+		btn.pressed.connect(func() -> void:
+			omnibar.visible = false
+			run_callable.call())
+		omnibar_results.add_child(btn)
+		count += 1
+		if count >= 10:
+			break
+
+
+func _collect_actions() -> Array:
+	var actions: Array = []
+	actions.append({"title": "✦ Новая карта (F2)", "run": func() -> void: request_new_map()})
+	actions.append({"title": "⛶ Вписать карту в экран (0)", "run": func() -> void: fit_requested.emit()})
+	actions.append({"title": "💾 Сохранить карту в .map", "run": func() -> void: save_requested.emit()})
+	actions.append({"title": "📂 Загрузить карту из .map", "run": func() -> void: load_requested.emit()})
+	actions.append({"title": "🖼️ Экспорт: PNG изображение", "run": func() -> void: export_requested.emit("png")})
+	actions.append({"title": "📐 Экспорт: SVG вектор", "run": func() -> void: export_requested.emit("svg")})
+	actions.append({"title": "📊 Экспорт: CSV ячейки", "run": func() -> void: export_requested.emit("csv")})
+	actions.append({"title": "🌐 Экспорт: GeoJSON данные", "run": func() -> void: export_requested.emit("geojson")})
+	actions.append({"title": "⛰️ Экспорт: Высотная карта", "run": func() -> void: export_requested.emit("height")})
+
+	for preset_id: String in PRESETS.keys():
+		var p_name: String = str(PRESET_TITLES[preset_id])
+		actions.append({
+			"title": "Пресет: %s" % p_name,
+			"run": func() -> void: apply_preset(preset_id)
+		})
+
+	for layer: Dictionary in LAYERS:
+		var l_name: String = str(layer["label"])
+		var prop: String = str(layer["prop"])
+		actions.append({
+			"title": "Слой: %s" % l_name,
+			"run": func() -> void:
+				view.set(prop, not bool(view.get(prop)))
+				view.queue_redraw()
+				if layer_buttons.has(str(layer["id"])):
+					_refresh_layer_button(layer_buttons[str(layer["id"])], bool(view.get(prop)))
+		})
+	return actions
+
+
+func apply_preset(preset_id: String) -> void:
+	if not PRESETS.has(preset_id):
+		return
+	var active_ids: Array = PRESETS[preset_id]
+	for layer: Dictionary in LAYERS:
+		var lid: String = str(layer["id"])
+		var should_show: bool = active_ids.has(lid)
+		var prop: String = str(layer["prop"])
+		view.set(prop, should_show)
+		if layer_buttons.has(lid):
+			_refresh_layer_button(layer_buttons[lid], should_show)
+	view.queue_redraw()
+	if preset_option != null:
+		for i: int in preset_option.item_count:
+			if str(preset_option.get_item_metadata(i)) == preset_id:
+				preset_option.select(i)
+				break
+
+
+func _refresh_layer_button(button: Button, active: bool) -> void:
+	button.button_pressed = active
+	_style_tag(button, "layer_active" if active else "layer")
+	if ui_theme != null:
+		ui_theme.apply_style(button)
+
+
+func handle_layer_key(keycode: int) -> bool:
+	for layer: Dictionary in LAYERS:
+		if int(layer["key"]) == keycode:
+			var prop: String = str(layer["prop"])
+			var new_val: bool = not bool(view.get(prop))
+			view.set(prop, new_val)
+			view.queue_redraw()
+			if layer_buttons.has(str(layer["id"])):
+				_refresh_layer_button(layer_buttons[str(layer["id"])], new_val)
+			return true
+	return false
+
+
+func set_busy(busy: bool) -> void:
+	_busy = busy
+	_set_node_busy(self, busy, [loading_overlay])
+
+
+func _set_node_busy(node: Node, busy: bool, skip: Array = []) -> void:
+	if node in skip:
+		return
+	if node.get_meta("keep_enabled", false):
+		pass
+	elif node is BaseButton:
+		(node as BaseButton).disabled = busy
+	elif node is LineEdit:
+		(node as LineEdit).editable = not busy
+	elif node is SpinBox:
+		(node as SpinBox).editable = not busy
+	elif node is Slider:
+		(node as Slider).editable = not busy
+	for child in node.get_children():
+		_set_node_busy(child, busy, skip)
+
+
+func set_status(text: String) -> void:
+	if status_label != null:
+		status_label.text = "● " + text
+
+
+func set_zoom(zoom: float) -> void:
+	if zoom_label != null:
+		zoom_label.text = "🔍 %d%%" % int(round(zoom * 100.0))
+
+
+func set_zoom_info(zoom_percent: int, pointer: String) -> void:
+	if zoom_label != null:
+		zoom_label.text = "🔍 %d%% · %s" % [zoom_percent, pointer]
+
+
+func show_progress(vis: bool) -> void:
+	if progress_bar != null:
+		progress_bar.visible = vis
+
+
+func set_progress(value: float) -> void:
+	if progress_bar != null:
+		progress_bar.value = clampf(value, 0.0, 1.0)
+
+
+func show_loading(vis: bool, stage_text: String = "Генерация мира…") -> void:
+	_busy = vis
+	if loading_overlay != null:
+		loading_overlay.visible = vis
+		if vis:
+			loading_stage_label.text = stage_text
+			loading_progress.value = 0.0
+
+
+func set_loading_stage(stage_text: String, progress_value: float) -> void:
+	if loading_stage_label != null:
+		loading_stage_label.text = stage_text
+	if loading_progress != null:
+		loading_progress.value = clampf(progress_value, 0.0, 1.0)
+
+
+func apply_generation_options() -> void:
+	if seed_edit != null:
+		sim.seed_value = seed_edit.text.strip_edges()
+		if sim.seed_value.is_empty():
+			sim.seed_value = str(randi() % 1000000000)
+			seed_edit.text = sim.seed_value
+	if template_option != null and template_option.selected >= 0:
+		var template_id: Variant = template_option.get_item_metadata(template_option.selected)
+		sim.template_id = str(template_id) if template_id != null else "random"
+	if density_option != null:
+		var d_id: int = density_option.get_selected_id()
+		if POINTS_BY_DENSITY.has(d_id):
+			sim.cells_desired = POINTS_BY_DENSITY[d_id]
+	if map_width_spin != null:
+		sim.map_width = float(map_width_spin.value)
+	if map_height_spin != null:
+		sim.map_height = float(map_height_spin.value)
+	if cultures_spin != null:
+		sim.cultures_limit = int(cultures_spin.value)
+	if cultures_set_option != null and cultures_set_option.selected >= 0:
+		var c_set: Variant = cultures_set_option.get_item_metadata(cultures_set_option.selected)
+		if c_set != null:
+			sim.cultures_set = str(c_set)
+	if states_spin != null:
+		sim.states_limit = int(states_spin.value)
+	if religions_spin != null:
+		sim.religions_limit = int(religions_spin.value)
+	if provinces_ratio_spin != null:
+		sim.provinces_ratio = float(provinces_ratio_spin.value)
+	if burgs_check != null:
+		sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
+	sim.poles_cache = {}
+	if distance_scale_spin != null and view != null:
+		view.distance_scale = float(distance_scale_spin.value)
+
+
+func refresh_from_sim() -> void:
+	if seed_edit != null:
+		seed_edit.text = sim.seed_value
+	if template_option != null:
+		for i: int in template_option.item_count:
+			if str(template_option.get_item_metadata(i)) == sim.template_id:
+				template_option.select(i)
+				break
+	if density_option != null:
+		for i: int in density_option.item_count:
+			var density_id: int = int(density_option.get_item_id(i))
+			if POINTS_BY_DENSITY.has(density_id) and POINTS_BY_DENSITY[density_id] == sim.cells_desired:
+				density_option.select(i)
+				break
+	if map_width_spin != null:
+		map_width_spin.set_value_no_signal(sim.map_width)
+	if map_height_spin != null:
+		map_height_spin.set_value_no_signal(sim.map_height)
+	if cultures_spin != null:
+		cultures_spin.set_value_no_signal(sim.cultures_limit)
+	if cultures_set_option != null:
+		for i: int in cultures_set_option.item_count:
+			if str(cultures_set_option.get_item_metadata(i)) == sim.cultures_set:
+				cultures_set_option.select(i)
+				break
+	if states_spin != null:
+		states_spin.set_value_no_signal(sim.states_limit)
+	if religions_spin != null:
+		religions_spin.set_value_no_signal(sim.religions_limit)
+	if provinces_ratio_spin != null:
+		provinces_ratio_spin.set_value_no_signal(sim.provinces_ratio)
+	if burgs_check != null:
+		burgs_check.set_pressed_no_signal(sim.burgs_limit < 0)
+	if distance_scale_spin != null:
+		distance_scale_spin.set_value_no_signal(view.distance_scale)
+	if climate_equator_spin != null:
+		climate_equator_spin.set_value_no_signal(sim.climate_equator)
+		climate_north_spin.set_value_no_signal(sim.climate_north_pole)
+		climate_south_spin.set_value_no_signal(sim.climate_south_pole)
+		climate_precip_spin.set_value_no_signal(sim.climate_precipitation)
+		for i: int in mini(wind_spins.size(), sim.climate_winds.size()):
+			(wind_spins[i] as SpinBox).set_value_no_signal(float(sim.climate_winds[i]))
+	for layer: Dictionary in LAYERS:
+		var id: String = str(layer["id"])
+		if layer_buttons.has(id):
+			var pressed: bool = bool(view.get(str(layer["prop"])))
+			var button: Button = layer_buttons[id]
+			button.set_pressed_no_signal(pressed)
+			_refresh_layer_button(button, pressed)
+
+
+func sync_from_sim() -> void:
+	refresh_from_sim()
+
+
+func _on_theme_changed() -> void:
+	if ui_theme != null:
+		ui_theme.apply_style(self)
+		for root: Control in [menu, trigger_box, export_popup, omnibar]:
+			if root != null:
+				ui_theme.apply_style(root)
+
+
+func _on_wind_changed(value: float, index: int) -> void:
+	if index >= 0 and index < sim.climate_winds.size():
+		sim.climate_winds[index] = value
+
+
+# ---------------------------------------------------------------------------
+# UI Helpers
 
 func _style_tag(node: Control, kind: String) -> void:
 	node.set_meta("fmg", kind)
@@ -618,7 +1368,7 @@ func _label(parent: Control, text: String, kind: String = "label", bold: bool = 
 	label.text = text
 	_style_tag(label, kind)
 	if bold:
-		label.add_theme_font_size_override("font_size", 13)
+		label.add_theme_font_size_override("font_size", 12)
 	parent.add_child(label)
 	return label
 
@@ -627,8 +1377,6 @@ func _tip(parent: Control, text: String) -> void:
 	var label := Label.new()
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	label.custom_minimum_size = Vector2(MENU_WIDTH - 34.0, 0)
-	label.add_theme_font_size_override("font_size", 11)
 	_style_tag(label, "tip")
 	parent.add_child(label)
 
@@ -672,14 +1420,16 @@ func _option_row(parent: Control, label_text: String, control: Control) -> void:
 	row.add_child(control)
 
 
-func _color_row(parent: Control, label_text: String, property: String) -> void:
+func _color_grid_item(parent: Control, label_text: String, property: String) -> void:
 	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(row)
-	_label(row, label_text, "label")
+	var lbl := _label(row, label_text, "label")
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var picker := ColorPickerButton.new()
 	picker.color = view.get(property)
-	picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	picker.custom_minimum_size = Vector2(0, 22)
+	picker.custom_minimum_size = Vector2(40, 22)
 	picker.color_changed.connect(func(color: Color) -> void:
 		view.set(property, color)
 		view.queue_redraw())
@@ -692,549 +1442,3 @@ func _climate_row(parent: Control, label_text: String, min_value: float, max_val
 	_spin_control_row(parent, label_text, spin)
 	spin.value_changed.connect(func(v: float) -> void: on_change.call(v))
 	return spin
-
-
-func _build_export_popup() -> void:
-	export_popup = PanelContainer.new()
-	export_popup.visible = false
-	_style_tag(export_popup, "panel")
-	add_child(export_popup)
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 2)
-	export_popup.add_child(box)
-	for entry: Array in [["png", "Изображение PNG"], ["svg", "Векторная карта SVG"], ["csv", "Данные ячеек CSV"], ["geojson", "Геоданные GeoJSON"], ["height", "Высотная карта PNG"]]:
-		var button := Button.new()
-		button.text = str(entry[1])
-		_style_tag(button, "button")
-		button.pressed.connect(func() -> void:
-			export_popup.visible = false
-			export_requested.emit(str(entry[0])))
-		box.add_child(button)
-
-
-func _build_omnibar() -> void:
-	omnibar = PanelContainer.new()
-	omnibar.visible = false
-	omnibar.custom_minimum_size = Vector2(MENU_WIDTH, 0)
-	_style_tag(omnibar, "panel")
-	add_child(omnibar)
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 4)
-	omnibar.add_child(box)
-	omnibar_edit = LineEdit.new()
-	omnibar_edit.placeholder_text = "Слои, пресеты, инструменты…"
-	_style_tag(omnibar_edit, "field")
-	omnibar_edit.text_changed.connect(_refresh_omnibar)
-	box.add_child(omnibar_edit)
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(0, 240)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_style_tag(scroll, "scroll")
-	box.add_child(scroll)
-	omnibar_results = VBoxContainer.new()
-	omnibar_results.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	omnibar_results.add_theme_constant_override("separation", 1)
-	scroll.add_child(omnibar_results)
-
-
-func _build_loading_overlay() -> void:
-	loading_overlay = Control.new()
-	loading_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
-	loading_overlay.visible = false
-	loading_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(loading_overlay)
-	var bg := ColorRect.new()
-	bg.color = Color("#466eab")
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	loading_overlay.add_child(bg)
-	var center := VBoxContainer.new()
-	center.set_anchors_preset(Control.PRESET_CENTER)
-	center.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	center.grow_vertical = Control.GROW_DIRECTION_BOTH
-	center.add_theme_constant_override("separation", 10)
-	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	loading_overlay.add_child(center)
-	var rose := Control.new()
-	rose.custom_minimum_size = Vector2(160, 160)
-	rose.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	center.add_child(rose)
-	var title := Label.new()
-	title.text = "Fantasy Map Generator"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 30)
-	title.add_theme_font_override("font", FmgUiTheme.mono())
-	title.add_theme_color_override("font_color", Color("#fff5da"))
-	title.add_theme_color_override("font_shadow_color", Color("#4c3a35"))
-	center.add_child(title)
-	loading_stage_label = Label.new()
-	loading_stage_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	loading_stage_label.add_theme_font_size_override("font_size", 17)
-	loading_stage_label.add_theme_font_override("font", FmgUiTheme.mono())
-	loading_stage_label.add_theme_color_override("font_color", Color("#fff5da"))
-	loading_stage_label.text = "Генерация…"
-	center.add_child(loading_stage_label)
-	loading_progress = ProgressBar.new()
-	loading_progress.min_value = 0.0
-	loading_progress.max_value = 1.0
-	loading_progress.show_percentage = false
-	loading_progress.custom_minimum_size = Vector2(320, 8)
-	center.add_child(loading_progress)
-	rose.draw.connect(_draw_loading_rose.bind(rose))
-	rose.set_meta("start_ms", Time.get_ticks_msec())
-
-
-## The original's loading screen: a slowly spinning compass rose.
-func _draw_loading_rose(rose: Control) -> void:
-	var center := rose.size / 2.0
-	var rotation_angle := TAU * float((Time.get_ticks_msec() - int(rose.get_meta("start_ms", 0))) % 20000) / 20000.0
-	var dark := Color("#3d3a50")
-	var light := Color("#fff5da")
-	var radius := minf(center.x, center.y) * 0.92
-	rose.draw_arc(center, radius, 0.0, TAU, 56, Color("#2f3d55"), 2.0, true)
-	for k: int in 16:
-		var major: bool = k % 2 == 0
-		var angle: float = rotation_angle - PI / 2.0 + TAU * float(k) / 16.0
-		var length: float = radius * (0.95 if major else 0.5)
-		var half_width: float = TAU / 16.0 * 0.55
-		var tip := center + Vector2(cos(angle), sin(angle)) * length
-		var left := center + Vector2(cos(angle - half_width), sin(angle - half_width)) * radius * 0.1
-		var right := center + Vector2(cos(angle + half_width), sin(angle + half_width)) * radius * 0.1
-		var tone := dark if k % 4 == 0 else light
-		if major:
-			rose.draw_colored_polygon(PackedVector2Array([center, tip, left]), tone)
-			rose.draw_colored_polygon(PackedVector2Array([center, tip, right]), Color(tone, 0.55))
-		else:
-			rose.draw_colored_polygon(PackedVector2Array([center, tip, left]), Color(tone, 0.7))
-			rose.draw_colored_polygon(PackedVector2Array([center, tip, right]), Color(tone, 0.35))
-	rose.draw_circle(center, radius * 0.07, dark)
-	rose.draw_circle(center, radius * 0.035, light)
-
-
-func _build_status_bar() -> void:
-	var bar := PanelContainer.new()
-	bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_style_tag(bar, "dragbar")
-	add_child(bar)
-	var box := VBoxContainer.new()
-	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	bar.add_child(box)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(row)
-	status_label = Label.new()
-	status_label.text = "Готов к генерации"
-	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	status_label.add_theme_font_override("font", FmgUiTheme.mono())
-	status_label.add_theme_font_size_override("font_size", 12)
-	status_label.add_theme_color_override("font_color", Color("#e8e4da"))
-	status_label.clip_text = true
-	status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(status_label)
-	zoom_label = Label.new()
-	zoom_label.text = ""
-	zoom_label.add_theme_font_override("font", FmgUiTheme.mono())
-	zoom_label.add_theme_font_size_override("font_size", 12)
-	zoom_label.add_theme_color_override("font_color", Color("#c9c2b4"))
-	zoom_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(zoom_label)
-	progress_bar = ProgressBar.new()
-	progress_bar.min_value = 0.0
-	progress_bar.max_value = 1.0
-	progress_bar.show_percentage = false
-	progress_bar.custom_minimum_size = Vector2(0, 6)
-	progress_bar.visible = false
-	progress_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(progress_bar)
-
-
-# ---------------------------------------------------------------------------
-# Behavior
-
-func _process(_delta: float) -> void:
-	if loading_overlay != null and loading_overlay.visible:
-		for child in loading_overlay.get_children():
-			if child is VBoxContainer:
-				(child as VBoxContainer).get_child(0).queue_redraw()
-
-
-func show_menu() -> void:
-	menu.visible = true
-	trigger_box.visible = false
-
-
-func hide_menu() -> void:
-	menu.visible = false
-	export_popup.visible = false
-	trigger_box.position = Vector2(10, 10)
-	trigger_box.visible = true
-	new_map_button.visible = true
-
-
-func is_menu_visible() -> bool:
-	return menu != null and menu.visible
-
-
-func toggle_menu() -> void:
-	if is_menu_visible():
-		hide_menu()
-	else:
-		show_menu()
-
-
-func select_tab(tab_id: String) -> void:
-	for id: String in TAB_IDS:
-		(tab_contents[id] as ScrollContainer).visible = id == tab_id
-		_style_tag(tab_buttons[id], "tab_active" if id == tab_id else "tab")
-	ui_theme.apply_style(menu)
-
-
-func _on_drag_bar_input(event: InputEvent, _bar: Control) -> void:
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			# start drag
-			set_meta("drag_offset", menu.position - (event as InputEventMouseButton).global_position)
-		else:
-			set_meta("drag_offset", null)
-	elif event is InputEventMouseMotion and get_meta("drag_offset", null) != null:
-		var offset: Vector2 = get_meta("drag_offset")
-		var size: Vector2 = get_viewport_rect().size
-		var target: Vector2 = (event as InputEventMouseMotion).global_position + offset
-		menu.position = Vector2(
-			clampf(target.x, 0.0, maxf(size.x - 60.0, 0.0)),
-			clampf(target.y, 0.0, maxf(size.y - 60.0, 0.0)))
-
-
-func request_new_map() -> void:
-	if _busy:
-		return
-	if seed_edit != null:
-		seed_edit.text = str(randi() % 1000000000)
-	generate_requested.emit()
-
-
-func _on_sticked_pressed(id: String) -> void:
-	match id:
-		"new":
-			request_new_map()
-		"export":
-			if export_button != null:
-				export_popup.position = export_button.global_position + Vector2(0, 24)
-				export_popup.visible = not export_popup.visible
-		"save":
-			save_requested.emit()
-		"load":
-			load_requested.emit()
-		"fit":
-			fit_requested.emit()
-		"search":
-			open_omnibar()
-
-
-func _find_buttons(root: Node) -> Array:
-	var result: Array = []
-	if root is Button:
-		result.append(root)
-	for child in root.get_children():
-		result.append_array(_find_buttons(child))
-	return result
-
-
-func open_omnibar() -> void:
-	omnibar.position = menu.position
-	omnibar_edit.text = ""
-	_refresh_omnibar("")
-	omnibar.visible = true
-	omnibar_edit.grab_focus()
-
-
-func close_popups() -> void:
-	export_popup.visible = false
-	omnibar.visible = false
-
-
-# ---------------------------------------------------------------------------
-# Layers
-
-func _refresh_layer_button(button: Button, pressed: bool) -> void:
-	_style_tag(button, "layer_active" if pressed else "layer")
-	if ui_theme != null:
-		ui_theme.apply_style(button)
-
-
-func apply_preset(preset_id: String) -> void:
-	if not PRESETS.has(preset_id):
-		return
-	var active: Array = PRESETS[preset_id]
-	for layer: Dictionary in LAYERS:
-		var id: String = str(layer["id"])
-		var prop: String = str(layer["prop"])
-		var pressed: bool = active.has(id)
-		view.set(prop, pressed)
-		if layer_buttons.has(id):
-			var button: Button = layer_buttons[id]
-			button.set_pressed_no_signal(pressed)
-			_refresh_layer_button(button, pressed)
-	view.queue_redraw()
-
-
-func set_layer(id: String, pressed: bool) -> void:
-	for layer: Dictionary in LAYERS:
-		if str(layer["id"]) != id:
-			continue
-		var prop: String = str(layer["prop"])
-		view.set(prop, pressed)
-		if layer_buttons.has(id):
-			var button: Button = layer_buttons[id]
-			button.set_pressed_no_signal(pressed)
-			_refresh_layer_button(button, pressed)
-		view.queue_redraw()
-		return
-
-
-## Keyboard layer toggles: letters switch layers like in the original.
-func handle_layer_key(keycode: int) -> bool:
-	if _text_input_focused():
-		return false
-	for layer: Dictionary in LAYERS:
-		if int(layer["key"]) == keycode:
-			set_layer(str(layer["id"]), not bool(view.get(str(layer["prop"]))))
-			return true
-	return false
-
-
-func _text_input_focused() -> bool:
-	var focus: Control = get_viewport().gui_get_focus_owner()
-	return focus is LineEdit or focus is SpinBox or focus is TextEdit or focus is CodeEdit
-
-
-# ---------------------------------------------------------------------------
-# Omnibar
-
-func _refresh_omnibar(query: String) -> void:
-	for child in omnibar_results.get_children():
-		child.queue_free()
-	var needle: String = query.strip_edges().to_lower()
-	var actions: Array = _collect_actions()
-	var shown: int = 0
-	for action: Dictionary in actions:
-		if shown >= 12:
-			break
-		var title: String = str(action["title"])
-		if not needle.is_empty() and not title.to_lower().contains(needle):
-			continue
-		var button := Button.new()
-		button.text = title
-		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		_style_tag(button, "button")
-		var action_ref: Dictionary = action
-		button.pressed.connect(func() -> void:
-			omnibar.visible = false
-			_run_action(action_ref))
-		omnibar_results.add_child(button)
-		shown += 1
-	if shown == 0:
-		var empty := Label.new()
-		empty.text = "Ничего не найдено"
-		_style_tag(empty, "tip")
-		omnibar_results.add_child(empty)
-
-
-func _collect_actions() -> Array:
-	var actions: Array = []
-	actions.append({"title": "Новая карта (F2)", "run": func() -> void: request_new_map()})
-	actions.append({"title": "Показать всю карту (0)", "run": func() -> void: fit_requested.emit()})
-	actions.append({"title": "Сохранить карту", "run": func() -> void: save_requested.emit()})
-	actions.append({"title": "Загрузить карту", "run": func() -> void: load_requested.emit()})
-	actions.append({"title": "Экспорт PNG", "run": func() -> void: export_requested.emit("png")})
-	actions.append({"title": "Экспорт SVG", "run": func() -> void: export_requested.emit("svg")})
-	actions.append({"title": "Экспорт CSV", "run": func() -> void: export_requested.emit("csv")})
-	actions.append({"title": "Экспорт GeoJSON", "run": func() -> void: export_requested.emit("geojson")})
-	actions.append({"title": "Экспорт высотной карты", "run": func() -> void: export_requested.emit("height")})
-	actions.append({"title": "Пересчитать климат", "run": func() -> void: climate_apply_requested.emit()})
-	for preset_id: String in PRESETS.keys():
-		var title: String = "Пресет: %s" % str(PRESET_TITLES[preset_id])
-		var preset_ref: String = preset_id
-		var runner := func() -> void:
-			apply_preset(preset_ref)
-			if preset_option != null:
-				for i: int in preset_option.item_count:
-					if str(preset_option.get_item_metadata(i)) == preset_ref:
-						preset_option.select(i)
-						break
-		actions.append({"title": title, "run": runner})
-	for layer: Dictionary in LAYERS:
-		var id: String = str(layer["id"])
-		var prop: String = str(layer["prop"])
-		var state: String = "вкл" if not bool(view.get(prop)) else "выкл"
-		actions.append({"title": "Слой: %s — %s" % [str(layer["label"]), state], "run": func() -> void: set_layer(id, not bool(view.get(prop)))})
-	actions.append({"title": "Обзор: Города", "run": func() -> void: overview_requested.emit("burgs")})
-	actions.append({"title": "Обзор: Государства", "run": func() -> void: overview_requested.emit("states")})
-	actions.append({"title": "Обзор: Реки", "run": func() -> void: overview_requested.emit("rivers")})
-	return actions
-
-
-func _run_action(action: Dictionary) -> void:
-	(action["run"] as Callable).call()
-
-
-# ---------------------------------------------------------------------------
-# State sync
-
-func _on_theme_changed() -> void:
-	if ui_theme == null or menu == null:
-		return
-	for tab_id: String in TAB_IDS:
-		if tab_buttons.has(tab_id):
-			var is_active: bool = (tab_contents[tab_id] as ScrollContainer).visible
-			_style_tag(tab_buttons[tab_id], "tab_active" if is_active else "tab")
-	ui_theme.apply_style(self)
-
-
-func set_busy(busy: bool) -> void:
-	_busy = busy
-	_set_node_busy(self, busy, [loading_overlay])
-
-
-func _set_node_busy(node: Node, busy: bool, skip: Array = []) -> void:
-	if node in skip:
-		return
-	if node.get_meta("keep_enabled", false):
-		pass
-	elif node is BaseButton:
-		(node as BaseButton).disabled = busy
-	elif node is LineEdit:
-		(node as LineEdit).editable = not busy
-	elif node is SpinBox:
-		(node as SpinBox).editable = not busy
-	elif node is Slider:
-		(node as Slider).editable = not busy
-	for child in node.get_children():
-		_set_node_busy(child, busy, skip)
-
-
-func show_loading(visible: bool) -> void:
-	loading_overlay.visible = visible
-	if visible:
-		loading_stage_label.text = "Генерация…"
-		loading_progress.value = 0.0
-
-
-func set_loading_stage(text: String, progress: float) -> void:
-	if loading_overlay.visible:
-		loading_stage_label.text = text
-		loading_progress.value = clampf(progress, 0.0, 1.0)
-
-
-func set_status(text: String) -> void:
-	if status_label != null:
-		status_label.text = text
-
-
-func set_zoom_info(zoom_percent: int, pointer: String) -> void:
-	if zoom_label != null:
-		zoom_label.text = "Масштаб: %d%% · %s" % [zoom_percent, pointer]
-
-
-func show_progress(visible: bool) -> void:
-	if progress_bar != null:
-		progress_bar.visible = visible
-
-
-func set_progress(value: float) -> void:
-	if progress_bar != null:
-		progress_bar.value = clampf(value, 0.0, 1.0)
-
-
-## Push current UI values into the simulation (before generation).
-func apply_generation_options() -> void:
-	if seed_edit != null:
-		sim.seed_value = seed_edit.text.strip_edges()
-		if sim.seed_value.is_empty():
-			sim.seed_value = str(randi() % 1000000000)
-			seed_edit.text = sim.seed_value
-	if template_option != null and template_option.selected >= 0:
-		var template_id: Variant = template_option.get_item_metadata(template_option.selected)
-		sim.template_id = str(template_id) if template_id != null else "random"
-	if density_option != null:
-		var d_id: int = density_option.get_selected_id()
-		if POINTS_BY_DENSITY.has(d_id):
-			sim.cells_desired = POINTS_BY_DENSITY[d_id]
-	if map_width_spin != null:
-		sim.map_width = float(map_width_spin.value)
-	if map_height_spin != null:
-		sim.map_height = float(map_height_spin.value)
-	if cultures_spin != null:
-		sim.cultures_limit = int(cultures_spin.value)
-	if cultures_set_option != null and cultures_set_option.selected >= 0:
-		var c_set: Variant = cultures_set_option.get_item_metadata(cultures_set_option.selected)
-		if c_set != null:
-			sim.cultures_set = str(c_set)
-	if states_spin != null:
-		sim.states_limit = int(states_spin.value)
-	if religions_spin != null:
-		sim.religions_limit = int(religions_spin.value)
-	if provinces_ratio_spin != null:
-		sim.provinces_ratio = float(provinces_ratio_spin.value)
-	if burgs_check != null:
-		sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
-	sim.poles_cache = {}
-	if distance_scale_spin != null and view != null:
-		view.distance_scale = float(distance_scale_spin.value)
-
-
-## Refresh controls from the simulation (after load).
-func refresh_from_sim() -> void:
-	if seed_edit != null:
-		seed_edit.text = sim.seed_value
-	if template_option != null:
-		for i: int in template_option.item_count:
-			if str(template_option.get_item_metadata(i)) == sim.template_id:
-				template_option.select(i)
-				break
-	if density_option != null:
-		for i: int in density_option.item_count:
-			var density_id: int = int(density_option.get_item_id(i))
-			if POINTS_BY_DENSITY.has(density_id) and POINTS_BY_DENSITY[density_id] == sim.cells_desired:
-				density_option.select(i)
-				break
-	if map_width_spin != null:
-		map_width_spin.set_value_no_signal(sim.map_width)
-	if map_height_spin != null:
-		map_height_spin.set_value_no_signal(sim.map_height)
-	if cultures_spin != null:
-		cultures_spin.set_value_no_signal(sim.cultures_limit)
-	if cultures_set_option != null:
-		for i: int in cultures_set_option.item_count:
-			if str(cultures_set_option.get_item_metadata(i)) == sim.cultures_set:
-				cultures_set_option.select(i)
-				break
-	if states_spin != null:
-		states_spin.set_value_no_signal(sim.states_limit)
-	if religions_spin != null:
-		religions_spin.set_value_no_signal(sim.religions_limit)
-	if provinces_ratio_spin != null:
-		provinces_ratio_spin.set_value_no_signal(sim.provinces_ratio)
-	if burgs_check != null:
-		burgs_check.set_pressed_no_signal(sim.burgs_limit < 0)
-	if climate_equator_spin != null:
-		climate_equator_spin.set_value_no_signal(sim.climate_equator)
-		climate_north_spin.set_value_no_signal(sim.climate_north_pole)
-		climate_south_spin.set_value_no_signal(sim.climate_south_pole)
-		climate_precip_spin.set_value_no_signal(sim.climate_precipitation)
-		for i: int in mini(wind_spins.size(), sim.climate_winds.size()):
-			(wind_spins[i] as SpinBox).set_value_no_signal(float(sim.climate_winds[i]))
-	for layer: Dictionary in LAYERS:
-		var id: String = str(layer["id"])
-		if layer_buttons.has(id):
-			var pressed: bool = bool(view.get(str(layer["prop"])))
-			var button: Button = layer_buttons[id]
-			button.set_pressed_no_signal(pressed)
-			_refresh_layer_button(button, pressed)
-
-
-func _on_wind_changed(value: float, index: int) -> void:
-	if index >= 0 and index < sim.climate_winds.size():
-		sim.climate_winds[index] = value
