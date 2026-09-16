@@ -352,7 +352,7 @@ func _add_eruption() -> void:
 func _add_avalanche() -> void:
 	var route_cells: Array = []
 	for i: int in pack.cell_count():
-		if used[i] == 0 and routes.is_connected(i) and pack.h[i] >= 70:
+		if used[i] == 0 and routes.is_on_route(i) and pack.h[i] >= 70:
 			route_cells.append(i)
 	if route_cells.is_empty():
 		return

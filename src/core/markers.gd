@@ -155,7 +155,7 @@ func _list_lighthouses() -> Array:
 			continue
 		var ok: bool = false
 		for neib: int in pack.c[i]:
-			if pack.h[neib] < 20 and routes.is_connected(neib):
+			if pack.h[neib] < 20 and routes.is_on_route(neib):
 				ok = true
 				break
 		if ok:
@@ -206,7 +206,7 @@ func _list_lake_monsters() -> Array:
 func _list_sea_monsters() -> Array:
 	var out: Array = []
 	for i: int in pack.cell_count():
-		if not _free(i) or pack.h[i] >= 20 or not routes.is_connected(i):
+		if not _free(i) or pack.h[i] >= 20 or not routes.is_on_route(i):
 			continue
 		if pack.feature_of(i).get("type", "") == "ocean":
 			out.append(i)
@@ -273,7 +273,7 @@ func _list_brigands() -> Array:
 func _list_pirates() -> Array:
 	var out: Array = []
 	for i: int in pack.cell_count():
-		if _free(i) and pack.h[i] < 20 and routes.is_connected(i):
+		if _free(i) and pack.h[i] < 20 and routes.is_on_route(i):
 			out.append(i)
 	return out
 

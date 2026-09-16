@@ -3,9 +3,9 @@ extends RefCounted
 ## Markets and trade. Port of markets-generator.ts (simplified edition):
 ## market centers picked among the biggest burgs with a spacing rule, market
 ## territories expanded with a multi-source Dijkstra, rural production stock,
-## prices from demand/supply and deals between neighboring markets.
-## The original worker-loop economy (production-generator.ts) is reduced to
-## this stock/price/deal model — see production.gd.
+## recipe manufacturing (production.gd), prices from demand/supply and deals
+## between neighboring markets. The original per-burg worker loop with
+## treasuries is reduced to this market-level stock/price/deal model.
 
 const PRICE_FLOOR_FACTOR: float = 0.1
 const PRICE_CEILING_FACTOR: float = 5.0
@@ -27,6 +27,7 @@ func generate() -> void:
 	_expand_markets(markets)
 	pack.markets = markets
 	_collect_rural_production()
+	FmgProduction.new(rng, pack, grid).manufacture_all()
 	_initialize_market_prices()
 	_generate_deals()
 
@@ -150,27 +151,15 @@ func _good_value(good_id: int) -> float:
 
 
 ## Price = base value × demand/supply ratio (simplified: demand from market
-## population and the good's demand coverage; manufactured goods skipped).
+## population and the good's demand coverage). All 71 goods are priced,
+## including manufactured ones, so recipe outputs can be traded in deals.
 func _initialize_market_prices() -> void:
-	var population_by_market := {}
-	for burg in pack.burgs:
-		if burg == null or int(burg.get("i", 0)) == 0:
-			continue
-		var market_id: int = int(burg.get("market", 0))
-		if market_id == 0:
-			continue
-		population_by_market[market_id] = float(population_by_market.get(market_id, 0.0)) + float(burg.get("population", 0.0))
-	for cell_id: int in pack.cell_count():
-		if pack.h[cell_id] >= 20 and pack.market[cell_id] > 0:
-			var rural_share: float = float(pack.pop[cell_id]) / 1000.0 # rural pop in the same units as burg population
-			population_by_market[pack.market[cell_id]] = float(population_by_market.get(pack.market[cell_id], 0.0)) + rural_share
+	var population_by_market: Dictionary = FmgProduction.market_population(pack)
 
 	for market: Dictionary in pack.markets:
 		var population: float = float(population_by_market.get(int(market["i"]), 0.0))
 		var goods_dict: Dictionary = market["goods"]
 		for good: Dictionary in FmgGoods.GOODS_DATA:
-			if not good.has("distribution"):
-				continue
 			var good_id: int = int(good["i"])
 			if not goods_dict.has(good_id):
 				goods_dict[good_id] = {"stock": 0.0, "price": float(good["value"])}

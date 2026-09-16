@@ -17,6 +17,11 @@ var cultures_spin: SpinBox = null
 var cultures_set_option: OptionButton = null
 var states_spin: SpinBox = null
 var burgs_check: CheckButton = null
+var climate_equator_spin: SpinBox = null
+var climate_north_spin: SpinBox = null
+var climate_south_spin: SpinBox = null
+var climate_precip_spin: SpinBox = null
+var wind_spins: Array = []
 var generate_button: Button = null
 var brush_option: OptionButton = null
 var brush_size: HSlider = null
@@ -57,14 +62,28 @@ func _run_headless_smoke() -> void:
 	await run_generation(true)
 	print("[smoke] stats: ", sim.get_stats_text())
 	print("[smoke] states: ", _collect_state_names())
+	print("[smoke] manufactured records: ", _count_manufacturing())
+	# export paths
+	_export_heightmap("/tmp/fmg_smoke_height.png")
+	print("[smoke] heightmap -> ", status_label.text)
+	_export_geojson("/tmp/fmg_smoke.geojson")
+	print("[smoke] geojson -> ", status_label.text)
 	# save + load roundtrip
 	var err: Error = sim.save_map("/tmp/fmg_smoke_test.map")
 	print("[smoke] save_map -> ", error_string(err))
 	err = sim.load_map("/tmp/fmg_smoke_test.map")
 	print("[smoke] load_map -> ", error_string(err))
+	print("[smoke] manufactured after load: ", _count_manufacturing())
 	view.rebuild_cache()
 	print("[smoke] OK")
 	get_tree().quit(0)
+
+
+func _count_manufacturing() -> int:
+	var total: int = 0
+	for m in sim.pack.markets:
+		total += ((m as Dictionary).get("manufacturing", []) as Array).size()
+	return total
 
 
 func _collect_state_names() -> String:
@@ -132,14 +151,31 @@ func run_generation(silent: bool = false) -> void:
 func _regenerate_after_edit() -> void:
 	if _generating:
 		return
+	_rerun_pipeline(sim.pipeline_from_heightmap(), "Пересчёт")
+
+
+func _on_climate_apply_pressed() -> void:
+	if _generating or sim.grid == null:
+		return
+	_rerun_pipeline(sim.pipeline_from_climate(), "Климат")
+
+
+func _on_wind_changed(value: float, index: int) -> void:
+	if index >= 0 and index < sim.climate_winds.size():
+		sim.climate_winds[index] = value
+
+
+## reruns a pipeline tail (after a brush or climate edit), keeping the UI alive
+func _rerun_pipeline(stages: Array, verb: String) -> void:
+	if _generating:
+		return
 	_generating = true
 	generate_button.disabled = true
 	progress_bar.show()
-	var stages: Array = sim.pipeline_from_heightmap()
 	var total: int = stages.size()
 	for i: int in stages.size():
 		var stage: Array = stages[i]
-		status_label.text = "Пересчёт: %s…" % stage[0]
+		status_label.text = "%s: %s…" % [verb, stage[0]]
 		progress_bar.value = float(i) / float(total)
 		await get_tree().process_frame
 		sim.run_stage(stage)
@@ -148,6 +184,18 @@ func _regenerate_after_edit() -> void:
 	status_label.text = sim.get_stats_text()
 	_generating = false
 	generate_button.disabled = false
+
+
+## refreshes the climate controls from Sim (after a map load)
+func _refresh_climate_ui() -> void:
+	if climate_equator_spin == null:
+		return
+	climate_equator_spin.set_value_no_signal(sim.climate_equator)
+	climate_north_spin.set_value_no_signal(sim.climate_north_pole)
+	climate_south_spin.set_value_no_signal(sim.climate_south_pole)
+	climate_precip_spin.set_value_no_signal(sim.climate_precipitation)
+	for i: int in mini(wind_spins.size(), sim.climate_winds.size()):
+		(wind_spins[i] as SpinBox).set_value_no_signal(float(sim.climate_winds[i]))
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +285,7 @@ func _on_load_pressed() -> void:
 		var err: Error = sim.load_map(path)
 		if err == OK:
 			seed_edit.text = sim.seed_value
+			_refresh_climate_ui()
 			view.rebuild_cache()
 			camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
 			status_label.text = "Загружено: %s" % path
@@ -314,6 +363,8 @@ func _export_dialog(kind: String, description: String) -> void:
 	dialog.file_selected.connect(func(path: String) -> void:
 		if kind == "svg":
 			_export_svg(path)
+		elif kind == "geojson":
+			_export_geojson(path)
 		else:
 			_export_csv(path)
 		dialog.queue_free()
@@ -433,6 +484,141 @@ func _xml_escape(s: String) -> String:
 	return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
 
+func _on_heightmap_pressed() -> void:
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.current_file = "heightmap_%s.png" % sim.seed_value
+	dialog.filters = PackedStringArray(["*.png ; PNG высотная карта"])
+	add_child(dialog)
+	dialog.file_selected.connect(func(path: String) -> void:
+		_export_heightmap(path)
+		dialog.queue_free()
+	)
+	dialog.popup_centered(Vector2i(700, 500))
+
+
+## Heightmap export: grayscale PNG at map resolution, sampled from the grid
+## heights (0 = black … 100 = white, sea level 20 ≈ gray 51).
+func _export_heightmap(path: String) -> void:
+	var grid: FmgGraph = sim.grid
+	if grid == null:
+		status_label.text = "Нет данных для экспорта"
+		return
+	var width: int = int(sim.map_width)
+	var height: int = int(sim.map_height)
+	if width <= 0 or height <= 0 or grid.h.is_empty():
+		status_label.text = "Нет данных для экспорта"
+		return
+	var data := PackedByteArray()
+	data.resize(width * height)
+	var spacing: float = grid.spacing
+	var cells_x: int = grid.cells_x
+	var cells_y: int = grid.cells_y
+	var last_idx: int = grid.h.size() - 1
+	for y: int in height:
+		var row: int = mini(int(float(y) / spacing), cells_y - 1)
+		for x: int in width:
+			var col: int = mini(int(float(x) / spacing), cells_x - 1)
+			var idx: int = mini(row * cells_x + col, last_idx)
+			data[y * width + x] = clampi(int(round(float(grid.h[idx]) * 2.55)), 0, 255)
+	var img := Image.create_from_data(width, height, false, Image.FORMAT_R8, data)
+	if img == null:
+		status_label.text = "Ошибка создания изображения"
+		return
+	var err: Error = img.save_png(path)
+	status_label.text = ("Экспортировано: %s" % path) if err == OK else ("Ошибка записи: %s" % error_string(err))
+
+
+## GeoJSON export: pack cells as polygons with attributes, burgs as points,
+## rivers as linestrings. Coordinates are map pixels (y grows downward);
+## see the "metadata" member of the collection.
+func _export_geojson(path: String) -> void:
+	var pack: FmgGraph = sim.pack
+	if pack == null:
+		status_label.text = "Нет данных для экспорта"
+		return
+	var features: Array = []
+	for i: int in pack.cell_count():
+		var poly := pack.get_polygon(i)
+		if poly.size() < 3:
+			continue
+		var ring: Array = []
+		for p: Vector2 in poly:
+			ring.append("[%.1f,%.1f]" % [p.x, p.y])
+		ring.append("[%.1f,%.1f]" % [poly[0].x, poly[0].y])
+		features.append('{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[%s]]},"properties":%s}' % [",".join(ring), _geojson_cell_props(i)])
+	for b in pack.burgs:
+		if b == null:
+			continue
+		features.append('{"type":"Feature","geometry":{"type":"Point","coordinates":[%.1f,%.1f]},"properties":%s}' % [float(b["x"]), float(b["y"]), _geojson_burg_props(b)])
+	for river in pack.rivers:
+		if river == null:
+			continue
+		var line: Array = []
+		for cell_id: Variant in (river as Dictionary).get("cells", []):
+			var cid: int = int(cell_id)
+			if cid >= 0 and cid < pack.cell_count():
+				line.append("[%.1f,%.1f]" % [pack.points[cid].x, pack.points[cid].y])
+		if line.size() < 2:
+			continue
+		features.append('{"type":"Feature","geometry":{"type":"LineString","coordinates":[%s]},"properties":%s}' % [",".join(line), _geojson_river_props(river)])
+	var header: String = '{"type":"FeatureCollection","metadata":{"seed":"%s","template":"%s","width":%d,"height":%d,"seaLevel":20,"cells":%d,"note":"coordinates are map pixels; y grows downward"},' % [
+		_json_escape(sim.seed_value), _json_escape(sim.template_id), int(sim.map_width), int(sim.map_height), pack.cell_count()]
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		status_label.text = "Ошибка записи: %s" % error_string(FileAccess.get_open_error())
+		return
+	f.store_string(header + '"features":[' + ",".join(features) + "]}")
+	f.close()
+	status_label.text = "Экспортировано: %s" % path
+
+
+func _geojson_cell_props(i: int) -> String:
+	var pack: FmgGraph = sim.pack
+	return '{"kind":"cell","id":%d,"x":%.1f,"y":%.1f,"height":%d,"biome":%d,"biomeName":"%s","culture":%d,"cultureName":"%s","state":%d,"stateName":"%s","province":%d,"provinceName":"%s","religion":%d,"religionName":"%s","population":%.2f,"river":%d,"flux":%.1f,"good":%d,"market":%d}' % [
+		i, pack.points[i].x, pack.points[i].y, pack.h[i],
+		pack.biome[i], _json_escape(_biome_name(pack.biome[i])),
+		pack.culture[i], _json_escape(_table_name(pack.cultures, pack.culture[i])),
+		pack.state[i], _json_escape(_table_name(pack.states, pack.state[i])),
+		pack.province[i], _json_escape(_table_name(pack.provinces, pack.province[i])),
+		pack.religion[i], _json_escape(_table_name(pack.religions, pack.religion[i])),
+		pack.pop[i], pack.r[i], pack.fl[i], pack.good[i], pack.market[i]
+	]
+
+
+func _geojson_burg_props(b: Dictionary) -> String:
+	return '{"kind":"burg","id":%d,"name":"%s","population":%.3f,"capital":%d,"port":%d,"state":%d,"stateName":"%s","culture":%d,"cultureName":"%s"}' % [
+		int(b.get("i", 0)), _json_escape(str(b.get("name", ""))), float(b.get("population", 0.0)),
+		1 if int(b.get("capital", 0)) == 1 else 0, int(b.get("port", 0)),
+		int(b.get("state", 0)), _json_escape(_table_name(sim.pack.states, int(b.get("state", 0)))),
+		int(b.get("culture", 0)), _json_escape(_table_name(sim.pack.cultures, int(b.get("culture", 0))))
+	]
+
+
+func _geojson_river_props(river: Dictionary) -> String:
+	return '{"kind":"river","id":%d,"name":"%s","type":"%s","length":%.1f,"width":%.2f}' % [
+		int(river.get("i", 0)), _json_escape(str(river.get("name", ""))), _json_escape(str(river.get("type", ""))),
+		float(river.get("length", 0.0)), float(river.get("width", 0.0))
+	]
+
+
+func _biome_name(biome_id: int) -> String:
+	if sim.pack == null or biome_id < 0 or biome_id >= sim.pack.biomes.size():
+		return ""
+	return str((sim.pack.biomes[biome_id] as Dictionary).get("name", ""))
+
+
+func _table_name(table: Array, entry_id: int) -> String:
+	if entry_id <= 0 or entry_id >= table.size() or table[entry_id] == null:
+		return ""
+	return str((table[entry_id] as Dictionary).get("name", ""))
+
+
+func _json_escape(s: String) -> String:
+	return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
 ## CSV export: one row per cell with the main attributes.
 func _export_csv(path: String) -> void:
 	var pack: FmgGraph = sim.pack
@@ -538,6 +724,37 @@ func _build_ui() -> void:
 	burgs_check.button_pressed = true
 	vbox.add_child(burgs_check)
 
+	# --- climate section (world configurator; values live in Sim) ---
+	vbox.add_child(_make_header("Климат"))
+	climate_equator_spin = _make_climate_spin(vbox, "Экватор °C", -10.0, 40.0, 0.5, sim.climate_equator, func(v: float) -> void: sim.climate_equator = v)
+	climate_north_spin = _make_climate_spin(vbox, "Сев. полюс °C", -60.0, 15.0, 0.5, sim.climate_north_pole, func(v: float) -> void: sim.climate_north_pole = v)
+	climate_south_spin = _make_climate_spin(vbox, "Юж. полюс °C", -60.0, 15.0, 0.5, sim.climate_south_pole, func(v: float) -> void: sim.climate_south_pole = v)
+	climate_precip_spin = _make_climate_spin(vbox, "Осадки %", 0.0, 400.0, 5.0, sim.climate_precipitation, func(v: float) -> void: sim.climate_precipitation = v)
+	wind_spins = []
+	var wind_names: Array = ["Ветер N пол.", "Ветер N умер.", "Ветер троп. N", "Ветер троп. S", "Ветер S умер.", "Ветер S пол."]
+	for i: int in 6:
+		var wind_spin := SpinBox.new()
+		wind_spin.min_value = 0.0
+		wind_spin.max_value = 360.0
+		wind_spin.step = 5.0
+		wind_spin.value = float(sim.climate_winds[i]) if i < sim.climate_winds.size() else 0.0
+		wind_spin.tooltip_text = "Направление преобладающего ветра пояса в градусах"
+		vbox.add_child(_make_row(wind_names[i], wind_spin))
+		wind_spin.value_changed.connect(_on_wind_changed.bind(i))
+		wind_spins.append(wind_spin)
+
+	var climate_btn := Button.new()
+	climate_btn.text = "Применить климат"
+	climate_btn.tooltip_text = "Пересчитать температуру, осадки и всё ниже по конвейеру"
+	climate_btn.pressed.connect(_on_climate_apply_pressed)
+	vbox.add_child(climate_btn)
+
+	var climate_hint := Label.new()
+	climate_hint.text = "Климат применяется кнопкой выше или при следующей генерации."
+	climate_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	climate_hint.add_theme_font_size_override("font_size", 11)
+	vbox.add_child(climate_hint)
+
 	generate_button = Button.new()
 	generate_button.text = "Сгенерировать карту"
 	generate_button.custom_minimum_size = Vector2(0, 40)
@@ -613,6 +830,16 @@ func _build_ui() -> void:
 	io_row2.add_theme_constant_override("separation", 4)
 	io_row2.add_child(svg_btn)
 	io_row2.add_child(csv_btn)
+	var height_btn := Button.new()
+	height_btn.text = "Высота"
+	height_btn.tooltip_text = "Экспорт высотной карты (grayscale PNG)"
+	height_btn.pressed.connect(_on_heightmap_pressed)
+	var geo_btn := Button.new()
+	geo_btn.text = "GeoJSON"
+	geo_btn.tooltip_text = "Экспорт клеток, городов и рек в GeoJSON"
+	geo_btn.pressed.connect(func() -> void: _export_dialog("geojson", "GeoJSON геоданные"))
+	io_row2.add_child(height_btn)
+	io_row2.add_child(geo_btn)
 	vbox.add_child(io_row2)
 
 	var hint := Label.new()
@@ -648,6 +875,17 @@ func _make_header(text: String) -> Label:
 	label.add_theme_font_size_override("font_size", 15)
 	label.add_theme_color_override("font_color", Color("#c8a24a"))
 	return label
+
+
+func _make_climate_spin(parent: Control, label_text: String, min_value: float, max_value: float, step: float, initial: float, on_change: Callable) -> SpinBox:
+	var spin := SpinBox.new()
+	spin.min_value = min_value
+	spin.max_value = max_value
+	spin.step = step
+	spin.value = initial
+	parent.add_child(_make_row(label_text, spin))
+	spin.value_changed.connect(func(v: float) -> void: on_change.call(v))
+	return spin
 
 
 func _make_row(label_text: String, control: Control) -> HBoxContainer:

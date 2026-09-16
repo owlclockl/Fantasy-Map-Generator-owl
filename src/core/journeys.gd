@@ -20,7 +20,7 @@ func generate(count: int = 3) -> void:
 	for burg in pack.burgs:
 		if burg == null or int(burg.get("i", 0)) == 0:
 			continue
-		if routes.is_connected(int(burg["cell"])):
+		if routes.is_on_route(int(burg["cell"])):
 			burgs_with_roads.append(burg)
 	if burgs_with_roads.size() < 2:
 		return

@@ -293,6 +293,12 @@ func pipeline_from_heightmap() -> Array:
 	return pipeline().slice(2)
 
 
+## regenerates everything downstream of the climate (after a climate edit):
+## temperature, precipitation, pack graph and all layers above it
+func pipeline_from_climate() -> Array:
+	return pipeline().slice(3)
+
+
 ## run a single pipeline stage; main.gd drives the loop (one stage per couple
 ## of frames to keep the UI responsive). Broadcasts stage_started.
 func run_stage(stage: Array) -> void:
