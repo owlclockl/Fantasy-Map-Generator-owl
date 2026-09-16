@@ -790,7 +790,7 @@ func _build_about_tab(content: VBoxContainer) -> void:
 # ---------------------------------------------------------------------------
 # Floating Overlays & Helpers
 
-func _make_card(parent: Control) -> PanelContainer:
+func _make_card(parent: Control) -> VBoxContainer:
 	var card := PanelContainer.new()
 	_style_tag(card, "card")
 	parent.add_child(card)
