@@ -21,7 +21,13 @@ Names="*res://src/core/names.gd"
 
 window/size/viewport_width=1680
 window/size/viewport_height=960
-window/stretch/mode="disabled"
+; The interface is authored on a 1680x960 canvas. "canvas_items" scales it up
+; with the window (crisp, fonts are oversampled), "expand" lets wide windows add
+; visible map area instead of black bars. Window ▸ Интерфейс adds an extra
+; multiplier on dense screens.
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/dpi/allow_hidpi=true
 
 [input_devices]
 

@@ -135,26 +135,73 @@ static func render_map(view: MapView, width: int, height: int) -> Image:
 			raster.draw_line(view.ruler_points[i], view.ruler_points[i + 1], Color(0.75, 0.1, 0.1, 0.9), 1)
 			total += view.ruler_points[i].distance_to(view.ruler_points[i + 1])
 
-	# --- compass rose (top-right) ---
+	# --- compass rose: anchored to the map's top-right corner ---
 	if view.show_compass:
-		_draw_compass(raster, Vector2(sim.map_width - 76.0, 82.0), 56.0)
+		var compass_radius: float = view.compass_radius()
+		var compass_inset: float = compass_radius * 1.4
+		_draw_compass(raster, Vector2(sim.map_width - compass_inset, compass_inset), compass_radius)
 
-	# --- scale bar (bottom-left) ---
+	# --- scale bar (printed on the map or pinned to the viewport) ---
 	if view.show_scale_bar:
-		_draw_scale_bar(raster, view, width, height)
+		if view.scale_bar_on_map:
+			_draw_map_scale_bar(raster, view)
+		else:
+			_draw_scale_bar(raster, view, width, height)
 
-	# --- vignette ---
+	# --- vignette / printed frame ---
 	if view.show_vignette:
-		for y: int in height:
-			for x: int in width:
-				var dx: float = (float(x) / float(width) - 0.5) * 2.0
-				var dy: float = (float(y) / float(height) - 0.5) * 2.0
-				var d: float = sqrt(dx * dx + dy * dy) / 1.42
-				var alpha: float = clampf((d - 0.55) / 0.45, 0.0, 1.0)
-				alpha = alpha * alpha * 0.42
-				if alpha > 0.003:
-					raster.blend_pixel(x, y, Color(0.05, 0.08, 0.14, alpha))
+		if view.vignette_on_map:
+			_draw_map_frame(raster, view, width, height)
+		else:
+			for y: int in height:
+				for x: int in width:
+					var dx: float = (float(x) / float(width) - 0.5) * 2.0
+					var dy: float = (float(y) / float(height) - 0.5) * 2.0
+					var d: float = sqrt(dx * dx + dy * dy) / 1.42
+					var alpha: float = clampf((d - 0.55) / 0.45, 0.0, 1.0)
+					alpha = alpha * alpha * 0.42
+					if alpha > 0.003:
+						raster.blend_pixel(x, y, Color(0.05, 0.08, 0.14, alpha))
 	return raster.image
+
+
+## Printed scale bar in the lower-left corner of the map itself (same value and
+## geometry as MapView._draw_map_scale_bar).
+static func _draw_map_scale_bar(raster: Raster, view: MapView) -> void:
+	var sim: FmgSim = view.sim
+	var km_per_px: float = maxf(view.distance_scale, 0.01)
+	var nice_km: float = view._nice_distance(sim.map_width * 0.16 * km_per_px)
+	var bar_len: float = nice_km / km_per_px
+	if bar_len <= 0.0:
+		return
+	var world_size: float = clampf(minf(sim.map_width, sim.map_height) * 0.013 * view.map_size_scale(), 6.0, 90.0) * view.style_label_scale
+	var bar_h: float = maxf(world_size * 0.35, 2.0)
+	var x0: float = sim.map_width * 0.03
+	var y0: float = sim.map_height * 0.965
+	var segments: int = 4
+	for k: int in segments:
+		var seg_x: int = int(round(x0 + bar_len * float(k) / float(segments)))
+		var seg_w: int = maxi(int(round(bar_len / float(segments))), 1)
+		var color: Color = Color(0.08, 0.1, 0.12) if k % 2 == 0 else Color(0.96, 0.94, 0.88)
+		raster.fill_rect(seg_x, int(round(y0 - bar_h)), seg_w, maxi(int(round(bar_h)), 1), color)
+	raster.stroke_rect(Rect2i(int(round(x0)), int(round(y0 - bar_h)), maxi(int(round(bar_len)), 1), maxi(int(round(bar_h)), 1)), Color(0.08, 0.1, 0.12, 0.9), 1)
+
+
+## Printed frame: the same banded darkening as MapView._draw_map_frame — a band
+## of the same width on the four sides of the map, faded inwards in 14 steps.
+static func _draw_map_frame(raster: Raster, view: MapView, width: int, height: int) -> void:
+	var sim: FmgSim = view.sim
+	var band: float = clampf(minf(sim.map_width, sim.map_height) * 0.06, 8.0, 400.0)
+	var steps: int = 14
+	var step_size: float = maxf(band / float(steps), 0.0001)
+	for y: int in height:
+		for x: int in width:
+			var edge: float = float(mini(mini(x, width - 1 - x), mini(y, height - 1 - y)))
+			if edge >= band:
+				continue
+			var step: int = mini(int(edge / step_size), steps - 1)
+			var t: float = 1.0 - float(step) / float(steps)
+			raster.blend_pixel(x, y, Color(0.05, 0.08, 0.14, t * t * 0.38))
 
 
 static func _draw_compass(raster: Raster, center: Vector2, radius: float) -> void:
@@ -178,15 +225,9 @@ static func _draw_compass(raster: Raster, center: Vector2, radius: float) -> voi
 
 static func _draw_scale_bar(raster: Raster, view: MapView, width: int, height: int) -> void:
 	var km_per_px: float = maxf(view.distance_scale, 0.01)
-	var raw_km: float = 140.0 * km_per_px
-	var magnitude: float = pow(10.0, floorf(log(raw_km) / log(10.0)))
-	var nice: float = magnitude
-	for candidate: float in [1.0, 2.0, 5.0, 10.0]:
-		if raw_km <= candidate * magnitude * 1.0001:
-			nice = candidate * magnitude
-			break
+	var nice: float = view._nice_distance(140.0 * km_per_px)
 	var bar_px: int = int(round(nice / km_per_px))
-	var pos := Vector2i(24, height - 40)
+	var pos := Vector2i(18, maxi(height - 52, 16))
 	var bar_height: int = 6
 	for k: int in 4:
 		var color := Color(0.08, 0.1, 0.12) if k % 2 == 0 else Color(0.96, 0.94, 0.88)

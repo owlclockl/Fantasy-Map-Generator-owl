@@ -48,6 +48,27 @@ var style_road_width := 1.1
 var style_label_scale := 1.0
 var distance_scale := 3.0 # kilometers per map pixel (Units ▸ distance scale)
 
+# --- lettering behaviour (see "Label rendering" below) -----------------------
+## Lettering follows the map like in the original (WITH_MAP) or keeps a constant
+## size on screen (FIXED_SCREEN). Both modes are rasterized at full resolution.
+enum LabelScale { WITH_MAP = 0, FIXED_SCREEN = 1 }
+var label_scale_mode: int = LabelScale.WITH_MAP
+var label_declutter: bool = true # hide lettering that would be unreadable
+var label_avoid_overlap: bool = true # drop names that would collide
+var label_min_px: float = 6.0 # smallest readable lettering (device pixels)
+var label_max_px: float = 192.0 # rasterization cap, keeps glyph atlases sane
+## Map furniture. The original prints the compass, the scale bar and the frame
+## into the map canvas itself, so they belong to the map by default and pan and
+## zoom together with it; both can also be pinned to the viewport instead.
+var scale_bar_on_map: bool = true
+var vignette_on_map: bool = true
+var _label_block_mode: int = -1 # mode of the block currently being drawn
+var _label_block_anchor := Vector2.ZERO # anchor of the block being drawn
+## Names already placed in the current frame, in device pixels — used to keep
+## lettering from piling up on top of each other.
+var _label_taken: Array[Rect2] = []
+const LABEL_TAKEN_LIMIT := 400
+
 # layer toggles — defaults follow the original's "political" layers preset
 var show_politics: bool = true
 var show_biomes: bool = false
@@ -86,6 +107,7 @@ var show_compass: bool = false
 var show_scale_bar: bool = true
 var show_vignette: bool = true
 var show_rulers: bool = false
+var show_legend: bool = false # map-printed legend (parity with the original)
 var ruler_points := PackedVector2Array()
 
 # cached geometry
@@ -159,7 +181,10 @@ func _ready() -> void:
 		"Georgia", "Times New Roman", "DejaVu Serif", "Noto Serif", "Palatino", "Serif",
 		"DejaVu Sans", "Noto Sans", "Segoe UI", "Arial", "sans-serif"
 	])
+	# Map lettering is placed at fractional positions and rasterized at the exact
+	# device size, so subpixel positioning plus light hinting stays the sharpest.
 	serif.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_AUTO
+	serif.hinting = TextServer.HINTING_LIGHT
 	serif.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
 	if ThemeDB.fallback_font != null:
 		serif.fallbacks = [ThemeDB.fallback_font]
@@ -170,10 +195,322 @@ func _ready() -> void:
 		"Segoe UI", "DejaVu Sans", "Noto Sans", "Liberation Sans", "Arial", "Helvetica", "sans-serif"
 	])
 	sans.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_AUTO
+	sans.hinting = TextServer.HINTING_LIGHT
 	sans.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
 	if ThemeDB.fallback_font != null:
 		sans.fallbacks = [ThemeDB.fallback_font]
 	_font_sans = sans
+
+
+# ---------------------------------------------------------------------------
+# Label rendering and device scale
+#
+# Lettering used to be drawn at a fixed font size and then magnified by the
+# camera: Godot rasterizes a glyph once, at the requested size, so zooming in
+# turned every name into mush — the "soapy text" the app was criticised for.
+#
+# Everything below works from the real device scale instead (camera zoom ×
+# window/interface scale) and hands the rasterizer the exact size a glyph ends
+# up covering on screen through font oversampling. Two modes are offered, and
+# both stay crisp at any zoom level:
+#
+#   • WITH_MAP     — the lettering lives in map units, exactly like in the
+#                    original: it grows together with the map.
+#   • FIXED_SCREEN — the lettering is drawn in interface pixels with a local
+#                    transform that cancels the camera zoom, so a name keeps a
+#                    constant, always readable size while staying glued to its
+#                    place on the map.
+#
+# In both modes one unit of the current "label block" maps to `label_block_scale`
+# device pixels; that factor doubles as the font oversampling factor, so what is
+# rasterized is exactly what ends up on screen.
+
+## Device pixels per map unit: camera zoom × interface scale (window stretch and
+## the manual UI scale). This is precisely what the old rendering ignored.
+func canvas_scale() -> float:
+	if not is_inside_tree():
+		return 1.0
+	var xform := get_viewport_transform() * get_global_transform()
+	var scale_v: Vector2 = xform.get_scale()
+	var value := maxf(absf(scale_v.x), 0.0001)
+	if not is_finite(value):
+		return 1.0
+	return clampf(value, 0.01, 64.0)
+
+
+## Camera zoom alone, without the interface scale — the part FIXED_SCREEN undoes.
+func camera_zoom() -> float:
+	if not is_inside_tree():
+		return 1.0
+	var cam := get_viewport().get_camera_2d()
+	if cam == null:
+		return 1.0
+	return clampf(maxf(absf(cam.zoom.x), 0.0001), 0.01, 64.0)
+
+
+## Interface scale: device pixels per interface pixel (window stretch × manual
+## UI scale). Fixed-size lettering and screen-pinned furniture live in this space.
+func interface_scale() -> float:
+	return clampf(canvas_scale() / maxf(camera_zoom(), 0.0001), 0.01, 64.0)
+
+
+## Lettering and furniture grow with the canvas, so an 8192 pt map does not end
+## up labelled with lettering sized for a 1280 pt one. 1.0 on the reference map
+## size keeps the classic look of the default map untouched.
+func map_size_scale() -> float:
+	var reference_side: float = sqrt(1280.0 * 800.0)
+	var side: float = sqrt(maxf(sim.map_width * sim.map_height, 1.0))
+	return clampf(pow(side / reference_side, 0.85), 0.6, 5.0)
+
+
+## Compass rose radius in map units — furniture that belongs to the map scales
+## with the canvas so it stays proportionate on a small or a huge map.
+func compass_radius() -> float:
+	return clampf(minf(sim.map_width, sim.map_height) * 0.05, 26.0, 150.0) * map_size_scale()
+
+
+## Device pixels per unit of the label block that is being drawn — the font
+## oversampling factor for that block, and the factor between the block's own
+## units and the screen.
+func label_block_scale(mode: int = -1) -> float:
+	var effective_mode: int = label_scale_mode if mode < 0 else mode
+	if effective_mode == LabelScale.FIXED_SCREEN:
+		return maxf(interface_scale(), 0.0001)
+	return maxf(canvas_scale(), 0.0001)
+
+
+## On-screen size (device pixels) of `world_size` map units of lettering.
+func label_screen_size(world_size: float, mode: int = -1) -> float:
+	var effective_mode: int = label_scale_mode if mode < 0 else mode
+	if effective_mode == LabelScale.FIXED_SCREEN:
+		return world_size * interface_scale()
+	return world_size * canvas_scale()
+
+
+## Declutter helper: `false` when the lettering would be unreadable anyway, so it
+## is better hidden than drawn as a grey smudge.
+func label_visible(world_size: float, mode: int = -1) -> bool:
+	if not label_declutter:
+		return true
+	return label_screen_size(world_size, mode) >= label_min_px
+
+
+## Visible part of the map in map coordinates (camera pan, zoom and interface
+## scale aware) — used to cull lettering and furniture that are off-screen.
+func visible_world_rect(margin: float = 64.0) -> Rect2:
+	var fallback := Rect2(Vector2.ZERO, Vector2(maxf(sim.map_width, 1.0), maxf(sim.map_height, 1.0))).grow(margin)
+	if not is_inside_tree():
+		return fallback
+	var size_px: Vector2 = screen_size_px()
+	var xform := get_viewport_transform() * get_global_transform()
+	if absf(xform.determinant()) < 0.0000001:
+		return fallback
+	var inv := xform.affine_inverse()
+	var corners: Array[Vector2] = [
+		inv * Vector2.ZERO,
+		inv * Vector2(size_px.x, 0.0),
+		inv * size_px,
+		inv * Vector2(0.0, size_px.y)
+	]
+	var min_p: Vector2 = corners[0]
+	var max_p: Vector2 = corners[0]
+	for corner: Vector2 in corners:
+		min_p = min_p.min(corner)
+		max_p = max_p.max(corner)
+	return Rect2(min_p, max_p - min_p).grow(margin)
+
+
+## Mode of the label block that is currently being drawn.
+func active_label_mode() -> int:
+	return label_scale_mode if _label_block_mode < 0 else _label_block_mode
+
+
+## Opens a label block anchored at `anchor` (map coordinates) and returns the
+## font size to use for it — always an integer, so glyphs are rasterized on a
+## stable grid. In WITH_MAP the block is simply map space; FIXED_SCREEN cancels
+## the camera zoom with a local transform, which keeps the lettering glued to its
+## anchor while its size stops depending on the zoom.
+func label_begin(anchor: Vector2, world_size: float, mode: int = -1) -> int:
+	var effective_mode: int = label_scale_mode if mode < 0 else mode
+	_label_block_mode = effective_mode
+	_label_block_anchor = anchor
+	if effective_mode == LabelScale.FIXED_SCREEN:
+		var zoom := camera_zoom()
+		draw_set_transform_matrix(Transform2D(0.0, Vector2(1.0 / zoom, 1.0 / zoom), 0.0, anchor))
+	return maxi(int(round(world_size)), 4)
+
+
+func label_end(mode: int = -1) -> void:
+	var effective_mode: int = label_scale_mode if mode < 0 else mode
+	if effective_mode == LabelScale.FIXED_SCREEN:
+		draw_set_transform_matrix(Transform2D.IDENTITY)
+	_label_block_mode = -1
+
+
+## Converts a box given in the units of the current label block back to map
+## units, so overlap tests can be made in a single, zoom-independent space.
+func _label_map_rect(box: Rect2) -> Rect2:
+	if _label_block_mode == LabelScale.FIXED_SCREEN:
+		var zoom := maxf(camera_zoom(), 0.0001)
+		return Rect2(_label_block_anchor + box.position / zoom, box.size / zoom)
+	return box
+
+
+## Device-pixel box a label of `width` at `font_size` will cover. Used to keep
+## names from piling up on top of each other.
+func label_overlap_rect(pos: Vector2, width: float, font_size: float) -> Rect2:
+	var height: float = maxf(font_size * 1.35, 1.0)
+	return label_device_rect(_label_map_rect(Rect2(pos, Vector2(maxf(width, 1.0), height))))
+
+
+## `true` when the box would collide with a name that is already placed. Cities
+## are placed before provinces and sea names, so the more important lettering
+## always keeps its spot.
+func label_blocked(box: Rect2) -> bool:
+	if not label_avoid_overlap:
+		return false
+	for other: Rect2 in _label_taken:
+		if other.intersects(box):
+			return true
+	return false
+
+
+## Marks a box as used, so later names can step around it.
+func label_reserve(box: Rect2) -> void:
+	if not label_avoid_overlap:
+		return
+	if _label_taken.size() < LABEL_TAKEN_LIMIT:
+		_label_taken.append(box)
+
+
+## World length (map units) → units of the current label block, for offsets such
+## as the gap between a burg icon and its name.
+func label_len(world_len: float) -> float:
+	if active_label_mode() == LabelScale.FIXED_SCREEN:
+		return world_len * camera_zoom()
+	return world_len
+
+
+## Device pixels → map units, for offsets and outlines that should stay the same
+## thickness on screen whatever the zoom is.
+func label_world_len(device_px: float) -> float:
+	return device_px / maxf(canvas_scale(), 0.0001)
+
+
+## Text width of a label drawn in the units of the current block.
+func label_text_width(font: Font, text: String, font_size: float) -> float:
+	if font == null or text.is_empty():
+		return 0.0
+	return font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, maxi(int(round(font_size)), 1)).x
+
+
+## Oversampling passed to a draw call: the glyphs are rasterized at
+## `font_size × factor` device pixels, which is what keeps zoomed text sharp.
+## Capped so a single glyph never rasterizes past label_max_px.
+func label_oversampling(font_size: float, mode: int = -1) -> float:
+	var factor := label_block_scale(mode)
+	var headroom: float = label_max_px / maxf(font_size, 1.0)
+	if headroom < factor:
+		factor = maxf(headroom, 1.0)
+	return clampf(factor, 1.0, 32.0)
+
+
+## Pushes a rasterization factor onto a font so plain draw_string() calls (used by
+## fallback paths) stay sharp as well. Callers that pass an explicit oversampling
+## factor keep priority over this value.
+func _set_font_oversampling(font: Font, factor: float) -> void:
+	if font == null:
+		return
+	var applied: Variant = font.get("oversampling")
+	if applied != null and absf(float(applied) - factor) < 0.001:
+		return
+	font.set("oversampling", factor)
+
+
+## Rasterize the map fonts at the current zoom: without this Godot magnifies
+## glyphs that were rasterized for another size and the text goes blurry.
+func _apply_font_oversampling() -> void:
+	var factor := clampf(canvas_scale(), 1.0, 32.0)
+	_set_font_oversampling(_font, factor)
+	_set_font_oversampling(_font_sans, factor)
+
+
+## Draws a map label (outline first) at `pos` — the baseline position, in the
+## units of the current block — rasterized for the current zoom. `outline_size`
+## is given in map units so it scales with the lettering. Returns the box the
+## text covers in map units, for overlap tests between names.
+func draw_label(font: Font, pos: Vector2, text: String, font_size: float, color: Color,
+		outline_size: float = 0.0, outline_color: Color = Color(0, 0, 0, 0), mode: int = -1) -> Rect2:
+	if text.is_empty() or font == null:
+		return Rect2()
+	var size_px: int = maxi(int(round(font_size)), 1)
+	var oversampling := label_oversampling(size_px, mode)
+	var ascent: float = font.get_ascent(size_px)
+	var descent: float = font.get_descent(size_px)
+	var width: float = label_text_width(font, text, size_px)
+	var box := Rect2(pos.x, pos.y - ascent, width, ascent + descent)
+	if outline_size > 0.0:
+		var outline_px: int = maxi(int(round(label_len(outline_size))), 1)
+		draw_string_outline(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size_px, outline_px, outline_color,
+			TextServer.JUSTIFICATION_WORD_BOUND, TextServer.DIRECTION_AUTO,
+			TextServer.ORIENTATION_HORIZONTAL, oversampling)
+	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size_px, color,
+		TextServer.JUSTIFICATION_WORD_BOUND, TextServer.DIRECTION_AUTO,
+		TextServer.ORIENTATION_HORIZONTAL, oversampling)
+	return box
+
+
+## Converts a label box (map units) to device pixels, for overlap tests that have
+## to hold at any zoom.
+func label_device_rect(box: Rect2) -> Rect2:
+	var scale_v := canvas_scale()
+	return Rect2(box.position * scale_v, box.size * scale_v)
+
+
+## Device pixels → units of the current label block, for offsets that should keep
+## the same thickness or gap on screen whatever the zoom is.
+func label_block_len(device_px: float, mode: int = -1) -> float:
+	return device_px / maxf(label_block_scale(mode), 0.0001)
+
+
+## Size of the visible area in real device pixels. Godot reports the visible rect
+## in canvas units; the window stretch (and the manual UI scale) turn those into
+## device pixels. Screen-pinned furniture is laid out in this space.
+func screen_size_px() -> Vector2:
+	if not is_inside_tree():
+		return Vector2(1680.0, 960.0)
+	var viewport := get_viewport()
+	var size_units: Vector2 = viewport.get_visible_rect().size
+	var stretch: Vector2 = viewport.get_stretch_transform().get_scale()
+	return Vector2(
+		size_units.x * maxf(absf(stretch.x), 0.0001),
+		size_units.y * maxf(absf(stretch.y), 0.0001)
+	)
+
+
+## Switches drawing to device-pixel space (the HUD: viewport-pinned furniture).
+func screen_space_begin() -> void:
+	if not is_inside_tree():
+		return
+	draw_set_transform_matrix((get_viewport_transform() * get_global_transform()).affine_inverse())
+
+
+func screen_space_end() -> void:
+	draw_set_transform_matrix(Transform2D.IDENTITY)
+
+
+## Text drawn 1:1 in device-pixel space: rasterize exactly at the drawn size.
+func draw_screen_label(font: Font, pos: Vector2, text: String, size_px: int, color: Color,
+		outline_px: int = 0, outline_color: Color = Color(0, 0, 0, 0)) -> void:
+	if text.is_empty() or font == null:
+		return
+	if outline_px > 0:
+		draw_string_outline(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size_px, outline_px, outline_color,
+			TextServer.JUSTIFICATION_WORD_BOUND, TextServer.DIRECTION_AUTO,
+			TextServer.ORIENTATION_HORIZONTAL, 1.0)
+	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size_px, color,
+		TextServer.JUSTIFICATION_WORD_BOUND, TextServer.DIRECTION_AUTO,
+		TextServer.ORIENTATION_HORIZONTAL, 1.0)
 
 
 func rebuild_cache() -> void:
@@ -581,6 +918,10 @@ func queue_redraw_all() -> void:
 func _draw() -> void:
 	if sim == null or sim.pack == null:
 		return
+	# Rasterize every glyph at the size it is shown at: this is what keeps
+	# zoomed-in lettering sharp instead of magnified and blurry.
+	_apply_font_oversampling()
+	_label_taken.clear()
 	# --- ocean ---
 	draw_rect(Rect2(-sim.map_width, -sim.map_height, sim.map_width * 3.0, sim.map_height * 3.0), style_ocean)
 	for level_value: Variant in _ocean_outline_segments:
@@ -710,6 +1051,10 @@ func _draw() -> void:
 	if show_province_labels:
 		_draw_province_labels()
 
+	# --- legend (printed on the map) ---
+	if show_legend:
+		_draw_legend()
+
 	# --- rulers (measure tool) ---
 	if show_rulers:
 		_draw_rulers()
@@ -719,18 +1064,29 @@ func _draw() -> void:
 		draw_arc(brush_preview_pos, brush_preview_radius, 0.0, TAU, 48, Color(1, 1, 1, 0.75), 1.2, true)
 		draw_arc(brush_preview_pos, brush_preview_radius, 0.0, TAU, 48, Color(0.1, 0.1, 0.1, 0.55), 0.6, true)
 
-	# --- compass rose (map furniture, world space) ---
+	# --- compass rose: map furniture, anchored to the map's top right corner ---
 	if show_compass:
-		_draw_compass(Vector2(sim.map_width - 76.0, 82.0), 56.0)
+		var radius := compass_radius()
+		var inset: float = radius * 1.4
+		_draw_compass(Vector2(sim.map_width - inset, inset), radius)
 
-	# --- screen-space furniture: scale bar + vignette ---
-	var screen_size: Vector2 = get_viewport_rect().size
-	draw_set_transform_matrix(get_viewport_transform().affine_inverse())
+	# --- scale bar: printed on the map (default) or pinned to the viewport ---
 	if show_scale_bar:
-		_draw_scale_bar(screen_size)
-	if show_vignette and _vignette_texture != null:
-		draw_texture_rect(_vignette_texture, Rect2(Vector2.ZERO, screen_size), false)
-	draw_set_transform_matrix(Transform2D.IDENTITY)
+		if scale_bar_on_map:
+			_draw_map_scale_bar()
+		else:
+			screen_space_begin()
+			_draw_scale_bar(screen_size_px())
+			screen_space_end()
+
+	# --- vignette: soft frame around the map (default) or around the screen ---
+	if show_vignette:
+		if vignette_on_map:
+			_draw_map_frame()
+		else:
+			screen_space_begin()
+			_draw_vignette(screen_size_px())
+			screen_space_end()
 
 
 func _cell_color_safe(_cell_id: int) -> Color:
@@ -867,48 +1223,83 @@ func _draw_burgs() -> void:
 
 
 func _draw_labels() -> void:
-	# state labels at poles of inaccessibility
+	var view := visible_world_rect(160.0)
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
+
+	# --- state names, at the poles of inaccessibility -----------------------
 	for state in sim.pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
 		if not sim.poles_cache.has(state["i"]):
 			continue
 		var pole: Vector2 = sim.poles_cache[state["i"]]
+		if not view.has_point(pole):
+			continue
 		var cells: int = state.get("cells", 10)
-		var font_size: float = clampf(sqrt(float(cells)) * 2.2, 11.0, 36.0) * style_label_scale
-		var font_size_int: int = maxi(int(round(font_size)), 9)
+		var world_size: float = clampf(sqrt(float(cells)) * 2.2, 11.0, 36.0) * style_label_scale * map_size_scale()
+		if not label_visible(world_size):
+			continue
 		var name_v: String = state.get("fullName", state["name"])
 		if name_v.is_empty():
 			continue
-		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size_int).x
-		var ascent: float = _font.get_ascent(font_size_int)
-		var descent: float = _font.get_descent(font_size_int)
-		var baseline_y: float = pole.y + (ascent - descent) * 0.5
-		var label_pos := Vector2(pole.x - width / 2.0, baseline_y)
-		var outline_size: int = 3 if font_size_int >= 14 else 2
-		draw_string_outline(_font, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size_int, outline_size, COL_TEXT_OUT)
-		draw_string(_font, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size_int, style_text)
+		var font_size: int = label_begin(pole, world_size)
+		var width: float = label_text_width(_font, name_v, font_size)
+		var ascent: float = _font.get_ascent(font_size)
+		var descent: float = _font.get_descent(font_size)
+		var label_pos := Vector2(-width / 2.0, (ascent - descent) * 0.5)
+		var outline_size: float = 3.0 if font_size >= 14 else 2.0
+		draw_label(_font, label_pos, name_v, font_size, style_text, outline_size, COL_TEXT_OUT)
+		label_reserve(label_overlap_rect(label_pos, width, font_size))
+		label_end()
 
-	# burg labels
-	var font_to_use: Font = _font_sans if _font_sans != null else _font
+	# --- burg names, most important first -----------------------------------
+	# Sorting the settlements lets the overlap test always keep the name that
+	# matters more, instead of whichever happened to be generated first.
+	var order: Array = []
 	for b in sim.pack.burgs:
 		if b == null:
 			continue
 		var pop: float = float(b.get("population", 0.0))
-		var is_capital: bool = b.get("capital", 0) == 1
+		var is_capital: bool = int(b.get("capital", 0)) == 1
 		if pop < 2.0 and not is_capital:
 			continue
+		var burg_pos := Vector2(float(b["x"]), float(b["y"]))
+		if not view.has_point(burg_pos):
+			continue
+		order.append({"burg": b, "pos": burg_pos, "pop": pop, "capital": is_capital})
+	order.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if bool(a["capital"]) != bool(b["capital"]):
+			return bool(a["capital"])
+		return float(a["pop"]) > float(b["pop"]))
+	var zoom := camera_zoom()
+	for entry_value: Variant in order:
+		var entry: Dictionary = entry_value
+		var b: Dictionary = entry["burg"]
+		var pop: float = entry["pop"]
+		var is_capital: bool = entry["capital"]
+		var burg_pos: Vector2 = entry["pos"]
 		var base_size: float = 12.0 if is_capital else clampf(8.5 + pop / 10.0, 8.5, 12.0)
-		var font_size: int = maxi(int(round(base_size * style_label_scale)), 7)
+		var world_size: float = base_size * style_label_scale * map_size_scale()
+		if not label_visible(world_size):
+			continue
+		# With screen-sized lettering small towns appear progressively as the map
+		# is zoomed in, like the original's label levels.
+		if label_scale_mode == LabelScale.FIXED_SCREEN and not is_capital and pop * zoom < 2.0:
+			continue
 		var b_name: String = str(b.get("name", ""))
 		if b_name.is_empty():
 			continue
-		var width: float = font_to_use.get_string_size(b_name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		var font_size: int = label_begin(burg_pos, world_size)
+		var width: float = label_text_width(font_to_use, b_name, font_size)
 		var radius: float = 3.4 if is_capital else 1.7
-		var pos := Vector2(b["x"] - width / 2.0, b["y"] + radius + font_size + 1.0)
-		var outline_size: int = 2 if font_size >= 10 else 1
-		draw_string_outline(font_to_use, pos, b_name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, outline_size, COL_TEXT_OUT)
-		draw_string(font_to_use, pos, b_name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, style_text)
+		var label_pos := Vector2(-width / 2.0, label_len(radius) + float(font_size) + 1.0)
+		if label_blocked(label_overlap_rect(label_pos, width, font_size)):
+			label_end()
+			continue
+		label_reserve(label_overlap_rect(label_pos, width, font_size))
+		var outline_size: float = 2.0 if font_size >= 10 else 1.0
+		draw_label(font_to_use, label_pos, b_name, font_size, style_text, outline_size, COL_TEXT_OUT)
+		label_end()
 
 
 # ---------------------------------------------------------------------------
@@ -1279,28 +1670,40 @@ func _draw_relief_icons() -> void:
 
 
 func _draw_feature_labels() -> void:
+	var view := visible_world_rect(160.0)
+	var size_scale := map_size_scale()
 	for label: Dictionary in _feature_labels:
 		var name_v: String = label["name"]
 		var pos: Vector2 = label["pos"]
-		var base_size: float = float(label["size"])
-		var font_size: int = maxi(int(round(base_size * style_label_scale)), 8)
+		if not view.has_point(pos):
+			continue
+		var world_size: float = float(label["size"]) * style_label_scale * size_scale
+		if not label_visible(world_size):
+			continue
 		var color: Color = label["color"]
-		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		var font_size: int = label_begin(pos, world_size)
+		var width: float = label_text_width(_font, name_v, font_size)
 		var ascent: float = _font.get_ascent(font_size)
 		var descent: float = _font.get_descent(font_size)
-		var start := pos + Vector2(-width / 2.0, (ascent - descent) * 0.5)
-		var out_size: int = 3 if font_size >= 14 else 2
+		var start := Vector2(-width / 2.0, (ascent - descent) * 0.5)
+		if label_blocked(label_overlap_rect(start, width, font_size)):
+			label_end()
+			continue
+		label_reserve(label_overlap_rect(start, width, font_size))
+		var out_size: float = 3.0 if font_size >= 14 else 2.0
 		var out_col: Color = Color(0.1, 0.15, 0.2, 0.55) if label["type"] == "island" else Color(0.05, 0.1, 0.2, 0.4)
-		draw_string_outline(_font, start, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, out_size, out_col)
-		draw_string(_font, start, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
+		draw_label(_font, start, name_v, font_size, color, out_size, out_col)
+		label_end()
 
 
 func _draw_province_labels() -> void:
 	var pack: FmgGraph = sim.pack
-	var font_size: int = maxi(int(round(10.0 * style_label_scale)), 8)
 	var font_to_use: Font = _font_sans if _font_sans != null else _font
-	var ascent: float = font_to_use.get_ascent(font_size)
-	var descent: float = font_to_use.get_descent(font_size)
+	var view := visible_world_rect(80.0)
+	var world_size: float = 10.0 * style_label_scale * map_size_scale()
+	if not label_visible(world_size):
+		return
+	var label_color := Color(0.2, 0.2, 0.3, 0.85)
 	for province in pack.provinces:
 		if province == null:
 			continue
@@ -1311,13 +1714,22 @@ func _draw_province_labels() -> void:
 				pole = Vector2(pack.burgs[burg_id]["x"], pack.burgs[burg_id]["y"])
 			else:
 				continue
+		if not view.has_point(pole):
+			continue
 		var name_v: String = province.get("fullName", province.get("name", ""))
 		if name_v.is_empty():
 			continue
-		var width: float = font_to_use.get_string_size(name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-		var label_pos := pole + Vector2(-width / 2.0, (ascent - descent) * 0.5)
-		draw_string_outline(font_to_use, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 2, COL_TEXT_OUT)
-		draw_string(font_to_use, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.2, 0.2, 0.3, 0.85))
+		var font_size: int = label_begin(pole, world_size)
+		var width: float = label_text_width(font_to_use, name_v, font_size)
+		var ascent: float = font_to_use.get_ascent(font_size)
+		var descent: float = font_to_use.get_descent(font_size)
+		var label_pos := Vector2(-width / 2.0, (ascent - descent) * 0.5)
+		if label_blocked(label_overlap_rect(label_pos, width, font_size)):
+			label_end()
+			continue
+		label_reserve(label_overlap_rect(label_pos, width, font_size))
+		draw_label(font_to_use, label_pos, name_v, font_size, label_color, 2.0, COL_TEXT_OUT)
+		label_end()
 
 
 # ---------------------------------------------------------------------------
@@ -1538,22 +1950,129 @@ func _draw_coordinates() -> void:
 		var y: float = (lat_n - lat) / lat_t * sim.map_height
 		segments.append(Vector2(0, y))
 		segments.append(Vector2(sim.map_width, y))
-		labels.append({"text": "%d°" % int(lat), "pos": Vector2(4.0, y - 2.0)})
+		labels.append({"text": "%d°" % int(lat), "pos": Vector2(0.0, y)})
 		lat += step
 	var lon: float = ceilf(lon_w / step) * step
 	while lon <= lon_w + lon_t + 0.001:
 		var x: float = (lon - lon_w) / lon_t * sim.map_width
 		segments.append(Vector2(x, 0))
 		segments.append(Vector2(x, sim.map_height))
-		labels.append({"text": "%d°" % int(round(lon)), "pos": Vector2(x + 2.0, 9.0)})
+		labels.append({"text": "%d°" % int(round(lon)), "pos": Vector2(x, 0.0)})
 		lon += step
 	if not segments.is_empty():
 		draw_multiline(segments, col, 0.5, true)
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
+	var view := visible_world_rect(48.0)
+	var world_size: float = 9.0 * map_size_scale()
+	if not label_visible(world_size):
+		return
 	for label_value: Variant in labels:
 		var label: Dictionary = label_value
-		var font_to_use: Font = _font_sans if _font_sans != null else _font
-		draw_string_outline(font_to_use, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, 2, Color(1, 1, 1, 0.75))
-		draw_string(font_to_use, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, col)
+		var pos: Vector2 = label["pos"]
+		if not view.has_point(pos):
+			continue
+		var font_size: int = label_begin(pos, world_size)
+		var label_pos := Vector2(label_len(world_size * 0.5), -label_len(world_size * 0.25))
+		draw_label(font_to_use, label_pos, str(label["text"]), font_size, col, 2.0, Color(1, 1, 1, 0.75))
+		label_end()
+
+
+## Legend entries for the layer that is currently on top, like the original's
+## legend panel: goods, biomes, cultures, religions or states.
+func legend_entries() -> Array:
+	var pack: FmgGraph = sim.pack
+	var entries: Array = []
+	if show_goods:
+		var counts := {}
+		for i: int in pack.cell_count():
+			var good_id: int = pack.good[i]
+			if good_id > 0 and good_id <= FmgGoods.GOODS_DATA.size():
+				counts[good_id] = int(counts.get(good_id, 0)) + 1
+		var ids: Array = counts.keys()
+		ids.sort_custom(func(a: Variant, b: Variant) -> bool: return int(counts[a]) > int(counts[b]))
+		for good_id: Variant in ids:
+			if entries.size() >= 14:
+				break
+			var good: Dictionary = FmgGoods.GOODS_DATA[int(good_id) - 1]
+			entries.append({"name": str(good.get("name", "?")), "color": Color.html(str(good.get("color", "#cccccc")))})
+	if entries.is_empty() and show_biomes:
+		for i: int in FmgBiomes.COLORS.size():
+			if i >= pack.biomes.size():
+				break
+			entries.append({"name": str((pack.biomes[i] as Dictionary).get("name", "?")), "color": Color.html(FmgBiomes.COLORS[i])})
+	if entries.is_empty() and show_cultures:
+		entries = _table_legend(pack.cultures)
+	if entries.is_empty() and show_religions:
+		entries = _table_legend(pack.religions)
+	if entries.is_empty():
+		entries = _table_legend(pack.states)
+	return entries
+
+
+func _table_legend(table: Array) -> Array:
+	var entries: Array = []
+	for i: int in table.size():
+		if i == 0 or table[i] == null:
+			continue
+		var entry: Dictionary = table[i]
+		var cells: int = int(entry.get("cells", 0))
+		if cells <= 0:
+			continue
+		entries.append({
+			"name": str(entry.get("name", "?")),
+			"color": Color.html(str(entry.get("color", "#cccccc")))
+		})
+		if entries.size() >= 16:
+			break
+	return entries
+
+
+## Map-printed legend in the lower right corner of the canvas. It belongs to the
+## map (it pans and zooms with it) and hides itself when it would be unreadable.
+func _draw_legend() -> void:
+	if sim == null or sim.pack == null:
+		return
+	var entries: Array = legend_entries()
+	if entries.is_empty():
+		return
+	var mode: int = LabelScale.WITH_MAP
+	var world_size: float = clampf(minf(sim.map_width, sim.map_height) * 0.011 * map_size_scale(), 4.0, 90.0) * style_label_scale
+	if not label_visible(world_size, mode):
+		return
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
+	var row_h: float = world_size * 1.7
+	var padding: float = world_size * 0.9
+	var swatch: float = world_size * 0.85
+	var title_size: float = world_size * 1.2
+	var max_width: float = label_text_width(font_to_use, "Легенда", title_size)
+	for entry_value: Variant in entries:
+		var entry: Dictionary = entry_value
+		max_width = maxf(max_width, label_text_width(font_to_use, str(entry["name"]), world_size) + swatch * 1.9)
+	var panel_size := Vector2(max_width + padding * 2.0, padding * 2.0 + row_h * float(entries.size() + 1))
+	var margin: float = minf(sim.map_width, sim.map_height) * 0.025
+	var origin := Vector2(sim.map_width - margin - panel_size.x, sim.map_height - margin - panel_size.y)
+	var view := visible_world_rect(0.0)
+	if not view.has_point(origin + panel_size * 0.5):
+		return
+	if panel_size.x > view.size.x * 0.55 or panel_size.y > view.size.y * 0.75:
+		return
+	draw_rect(Rect2(origin, panel_size), Color(0.96, 0.95, 0.9, 0.88), true)
+	draw_rect(Rect2(origin, panel_size), Color(0.16, 0.17, 0.21, 0.55), false, maxf(world_size * 0.08, 0.35))
+	var title_anchor := origin + Vector2(padding, padding + title_size)
+	var font_size: int = label_begin(title_anchor, title_size, mode)
+	draw_label(font_to_use, Vector2.ZERO, "Легенда", font_size, Color(0.12, 0.13, 0.17))
+	label_end(mode)
+	for i: int in entries.size():
+		var entry: Dictionary = entries[i]
+		var baseline: float = origin.y + padding + row_h * float(i + 1) + title_size
+		var row_anchor := Vector2(origin.x + padding, baseline)
+		var swatch_rect := Rect2(Vector2(row_anchor.x, baseline - swatch), Vector2(swatch, swatch))
+		draw_rect(swatch_rect, entry["color"], true)
+		draw_rect(swatch_rect, Color(0.16, 0.17, 0.21, 0.6), false, maxf(world_size * 0.06, 0.3))
+		var name_anchor := Vector2(row_anchor.x + swatch * 1.9, baseline)
+		var name_size: int = label_begin(name_anchor, world_size, mode)
+		draw_label(font_to_use, Vector2.ZERO, str(entry["name"]), name_size, Color(0.16, 0.17, 0.21, 0.95))
+		label_end(mode)
 
 
 ## Measure tool: polyline through ruler_points with a running distance label.
@@ -1575,9 +2094,13 @@ func _draw_rulers() -> void:
 	if ruler_points.size() >= 2:
 		var last: Vector2 = ruler_points[ruler_points.size() - 1]
 		var label: String = _format_distance(total)
-		var size: int = 11
-		draw_string_outline(_font, last + Vector2(6.0, -6.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, 3, Color(1, 1, 1, 0.8))
-		draw_string(_font, last + Vector2(6.0, -6.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+		# The readout is a measuring tool, so it keeps a constant screen size
+		# (and full device resolution) in every label mode.
+		var font_size: int = label_begin(last, 11.0, LabelScale.FIXED_SCREEN)
+		var label_pos := Vector2(label_block_len(6.0), -label_block_len(6.0))
+		draw_label(_font, label_pos, label, font_size, col, label_world_len(2.0), Color(1, 1, 1, 0.8),
+			LabelScale.FIXED_SCREEN)
+		label_end(LabelScale.FIXED_SCREEN)
 
 
 func _format_distance(pixels: float) -> String:
@@ -1589,6 +2112,11 @@ func _format_distance(pixels: float) -> String:
 
 ## 16-point compass rose, two-tone points like the original wind rose.
 func _draw_compass(center: Vector2, radius: float) -> void:
+	var view := visible_world_rect(0.0)
+	if not view.has_point(center):
+		return
+	if radius > view.size.y * 0.4:
+		return
 	var dark := Color("#27374d")
 	var light := Color("#f4f1e6")
 	var ring := Color("#3a4a5f")
@@ -1616,45 +2144,92 @@ func _draw_compass(center: Vector2, radius: float) -> void:
 	draw_circle(center, radius * 0.07, dark)
 	draw_circle(center, radius * 0.035, light)
 	# N E S W letters (Godot 2D coordinates: -PI/2 is North/up, 0 is East/right, PI/2 is South/down, PI is West/left)
+	# The rose is part of the map, so its lettering scales with it — it is drawn
+	# in WITH_MAP mode even when the map labels are pinned to the screen.
 	var letters := [["N", -PI / 2.0], ["E", 0.0], ["S", PI / 2.0], ["W", PI]]
 	var font_to_use: Font = _font_sans if _font_sans != null else _font
+	var letter_size: float = clampf(radius * 0.26, 9.0, 34.0) * style_label_scale
 	for entry: Array in letters:
 		var angle: float = float(entry[1])
-		var pos := center + Vector2(cos(angle), sin(angle)) * radius * 1.12
+		var pos := center + Vector2(cos(angle), sin(angle)) * radius * 1.14
 		var letter: String = str(entry[0])
-		var width: float = font_to_use.get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
-		var ascent: float = font_to_use.get_ascent(13)
-		var descent: float = font_to_use.get_descent(13)
-		var draw_pos := pos + Vector2(-width / 2.0, (ascent - descent) * 0.5)
-		draw_string_outline(font_to_use, draw_pos, letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 3, Color(1, 1, 1, 0.75))
-		draw_string(font_to_use, draw_pos, letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#33465e"))
+		var font_size: int = label_begin(pos, letter_size, LabelScale.WITH_MAP)
+		var width: float = label_text_width(font_to_use, letter, font_size)
+		var ascent: float = font_to_use.get_ascent(font_size)
+		var descent: float = font_to_use.get_descent(font_size)
+		var draw_pos := Vector2(-width / 2.0, (ascent - descent) * 0.5)
+		draw_label(font_to_use, draw_pos, letter, font_size, Color("#33465e"), letter_size * 0.24, Color(1, 1, 1, 0.75))
+		label_end(LabelScale.WITH_MAP)
 
 
-## Screen-fixed scale bar in the bottom-left corner, like the original's.
+## Scale bar pinned to the viewport (device-pixel space), laid out on the
+## interface scale so it stays clear of the status bar at any UI scale.
 func _draw_scale_bar(screen_size: Vector2) -> void:
+	var ui := interface_scale()
 	var km_per_px: float = maxf(distance_scale, 0.01)
-	var target_px: float = 140.0
-	var raw_km: float = target_px * km_per_px
-	var magnitude: float = pow(10.0, floorf(log(raw_km) / log(10.0)))
-	var nice: float = magnitude
-	for candidate: float in [1.0, 2.0, 5.0, 10.0]:
-		if raw_km <= candidate * magnitude * 1.0001:
-			nice = candidate * magnitude
-			break
-	var bar_px: float = nice / km_per_px
-	var pos := Vector2(24.0, screen_size.y - 40.0)
-	var bar_height: float = 6.0
-	var cells_count: int = 4
-	for k: int in cells_count:
-		var rect := Rect2(pos + Vector2(bar_px * float(k) / float(cells_count), 0), Vector2(bar_px / float(cells_count), bar_height))
-		draw_rect(rect, Color(0.08, 0.1, 0.12) if k % 2 == 0 else Color(0.96, 0.94, 0.88), true)
-	draw_rect(Rect2(pos, Vector2(bar_px, bar_height)), Color(0.08, 0.1, 0.12), false, 1.0)
-	var label: String = "%s км" % _format_number(nice)
-	var label_size: int = 12
+	var nice_km: float = _nice_distance(140.0 * ui * km_per_px)
+	var bar_px: float = nice_km / km_per_px
+	var bar_height: float = maxf(6.0 * ui, 3.0)
+	var pos := Vector2(18.0 * ui, maxf(screen_size.y - 46.0 * ui - bar_height, 16.0 * ui))
+	for k: int in 4:
+		var segment := Rect2(pos + Vector2(bar_px * 0.25 * float(k), 0.0), Vector2(bar_px * 0.25, bar_height))
+		draw_rect(segment, Color(0.08, 0.1, 0.12) if k % 2 == 0 else Color(0.96, 0.94, 0.88), true)
+	draw_rect(Rect2(pos, Vector2(bar_px, bar_height)), Color(0.08, 0.1, 0.12), false, maxf(ui, 1.0))
 	var font_to_use: Font = _font_sans if _font_sans != null else _font
-	var width: float = font_to_use.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size).x
-	draw_string_outline(font_to_use, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, 3, Color(1, 1, 1, 0.8))
-	draw_string(font_to_use, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, Color(0.08, 0.1, 0.12))
+	var label: String = "%s км" % _format_number(nice_km)
+	var size_px: int = maxi(int(round(12.0 * ui)), 8)
+	var width: float = font_to_use.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, size_px).x
+	var label_pos := pos + Vector2((bar_px - width) * 0.5, -5.0 * ui)
+	# Drawn 1:1 in device pixels, so it is rasterized at exactly its screen size.
+	draw_screen_label(font_to_use, label_pos, label, size_px, Color(0.08, 0.1, 0.12),
+		maxi(int(round(3.0 * ui)), 1), Color(1, 1, 1, 0.8))
+
+
+## Largest 1 / 2 / 5 × 10ⁿ value that does not exceed `raw_km`.
+func _nice_distance(raw_km: float) -> float:
+	if raw_km <= 0.0:
+		return 1.0
+	var magnitude: float = pow(10.0, floorf(log(raw_km) / log(10.0)))
+	for candidate: float in [10.0, 5.0, 2.0, 1.0]:
+		if raw_km >= candidate * magnitude * 0.9999:
+			return candidate * magnitude
+	return magnitude
+
+
+## Scale bar printed on the map itself: it belongs to the map, so it pans and
+## zooms together with the world instead of floating above the viewport. Its
+## length is picked so that it stays a small part of the map width.
+func _draw_map_scale_bar() -> void:
+	var km_per_px: float = maxf(distance_scale, 0.01)
+	var nice_km: float = _nice_distance(sim.map_width * 0.16 * km_per_px)
+	var bar_len: float = nice_km / km_per_px
+	if bar_len <= 0.0:
+		return
+	var view := visible_world_rect(0.0)
+	var world_size: float = clampf(minf(sim.map_width, sim.map_height) * 0.013 * map_size_scale(), 6.0, 90.0) * style_label_scale
+	var x0: float = sim.map_width * 0.03
+	var y0: float = sim.map_height * 0.965
+	var bar_h: float = maxf(world_size * 0.35, 2.0)
+	var bar := Rect2(x0, y0 - bar_h, bar_len, bar_h)
+	if not view.intersects(bar.grow(world_size)):
+		return
+	# Printed furniture steps aside once zooming in makes it fill the screen.
+	if bar_len > view.size.x * 0.7 or bar_h > view.size.y * 0.35:
+		return
+	for k: int in 4:
+		var segment := Rect2(x0 + bar_len * 0.25 * float(k), y0 - bar_h, bar_len * 0.25, bar_h)
+		draw_rect(segment, Color(0.08, 0.1, 0.12) if k % 2 == 0 else Color(0.96, 0.94, 0.88), true)
+	draw_rect(bar, Color(0.08, 0.1, 0.12, 0.9), false, maxf(world_size * 0.07, 0.4))
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
+	var label: String = "%s км" % _format_number(nice_km)
+	# The printed scale bar is part of the map, so its caption scales with the map
+	# even when the map lettering itself is switched to a fixed screen size.
+	var anchor := Vector2(x0 + bar_len * 0.5, y0 - bar_h - world_size * 0.4)
+	var font_size: int = label_begin(anchor, world_size, LabelScale.WITH_MAP)
+	var width: float = label_text_width(font_to_use, label, font_size)
+	draw_label(font_to_use, Vector2(-width / 2.0, 0.0), label, font_size, Color(0.1, 0.12, 0.16),
+		world_size * 0.24, Color(0.96, 0.94, 0.88, 0.9), LabelScale.WITH_MAP)
+	label_end(LabelScale.WITH_MAP)
 
 
 func _format_number(value: float) -> String:
@@ -1664,7 +2239,51 @@ func _format_number(value: float) -> String:
 	return str(rounded)
 
 
-## Soft dark border around the viewport (the original's vignette layer).
+## Soft dark frame printed around the map itself. The original applies its
+## vignette to the map canvas, so the darkening belongs to the map: it pans and
+## zooms with it and never covers the interface.
+func _draw_map_frame() -> void:
+	var width: float = sim.map_width
+	var height: float = sim.map_height
+	if width <= 1.0 or height <= 1.0:
+		return
+	var view := visible_world_rect(0.0)
+	if view.size.x <= 0.0 or view.size.y <= 0.0:
+		return
+	# Same band width on all four sides, whatever the map aspect is, faded
+	# inwards in steps so the transition is smooth without any texture setup.
+	var band: float = clampf(minf(width, height) * 0.06, 8.0, 400.0)
+	var steps: int = 14
+	var step_size: float = band / float(steps)
+	var edge_color := Color(0.05, 0.08, 0.14)
+	for i: int in steps:
+		var t: float = 1.0 - float(i) / float(steps)
+		var alpha: float = t * t * 0.38
+		if alpha <= 0.002:
+			continue
+		var color := Color(edge_color, alpha)
+		var inset: float = step_size * float(i)
+		var top := Rect2(0.0, inset, width, step_size)
+		if top.intersects(view):
+			draw_rect(top, color, true)
+		var bottom := Rect2(0.0, height - inset - step_size, width, step_size)
+		if bottom.intersects(view):
+			draw_rect(bottom, color, true)
+		var left := Rect2(inset, 0.0, step_size, height)
+		if left.intersects(view):
+			draw_rect(left, color, true)
+		var right := Rect2(width - inset - step_size, 0.0, step_size, height)
+		if right.intersects(view):
+			draw_rect(right, color, true)
+
+
+## Radial vignette pinned to the viewport (device-pixel space).
+func _draw_vignette(screen_size: Vector2) -> void:
+	if _vignette_texture == null:
+		return
+	draw_texture_rect(_vignette_texture, Rect2(Vector2.ZERO, screen_size), false)
+
+
 func _build_vignette_texture() -> void:
 	if _vignette_texture != null:
 		return
