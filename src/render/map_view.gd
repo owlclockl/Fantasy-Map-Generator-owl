@@ -88,6 +88,18 @@ var _road_segments: PackedVector2Array = PackedVector2Array()
 var _trail_segments: PackedVector2Array = PackedVector2Array()
 var _journey_segments: PackedVector2Array = PackedVector2Array()
 
+# Static geometry that used to be submitted once per island, river or glacier.
+# It is triangulated into a single mesh per visual layer without changing the
+# source polygons or their colors.
+var _land_mesh: ArrayMesh = null
+var _lake_mesh: ArrayMesh = null
+var _river_mesh: ArrayMesh = null
+var _ice_mesh: ArrayMesh = null
+var _coast_segments: PackedVector2Array = PackedVector2Array()
+var _lake_shore_segments: PackedVector2Array = PackedVector2Array()
+var _ice_outline_segments: PackedVector2Array = PackedVector2Array()
+var _ocean_outline_segments: Dictionary = {}
+
 # brush preview (set by main.gd)
 var brush_preview_visible: bool = false
 var brush_preview_pos := Vector2.ZERO
@@ -124,6 +136,14 @@ func rebuild_cache() -> void:
 	_road_segments = PackedVector2Array()
 	_trail_segments = PackedVector2Array()
 	_journey_segments = PackedVector2Array()
+	_land_mesh = null
+	_lake_mesh = null
+	_river_mesh = null
+	_ice_mesh = null
+	_coast_segments = PackedVector2Array()
+	_lake_shore_segments = PackedVector2Array()
+	_ice_outline_segments = PackedVector2Array()
+	_ocean_outline_segments = {}
 	_mountain_points = PackedVector2Array()
 	_tree_points = PackedVector2Array()
 	if sim == null or sim.pack == null:
@@ -184,6 +204,7 @@ func rebuild_cache() -> void:
 	# The rest of the render data is immutable until the next generation. Build
 	# it here rather than in _draw(), so toggling a layer only changes a single
 	# mesh draw call and never walks the complete Voronoi graph again.
+	_build_static_geometry()
 	_build_overlay_meshes()
 	_build_border_segments()
 	_build_route_segments()
@@ -200,6 +221,81 @@ func _build_cell_polygons() -> void:
 	for i: int in pack.cell_count():
 		var polygon: PackedVector2Array = pack.get_polygon(i)
 		_cell_polygons[i] = FmgPaths.clip_poly(polygon, sim.map_width, sim.map_height)
+
+
+## Triangulates a polygon with Geometry2D instead of a fan, so concave river
+## and coastline polygons retain exactly the same fill as draw_colored_polygon.
+func _append_polygon_mesh(data: Dictionary, polygon: PackedVector2Array, color: Color) -> void:
+	var points := PackedVector2Array(polygon)
+	if points.size() > 1 and points[0].distance_squared_to(points[points.size() - 1]) < 0.0001:
+		points.remove_at(points.size() - 1)
+	if points.size() < 3:
+		return
+	var indices: PackedInt32Array = Geometry2D.triangulate_polygon(points)
+	if indices.size() < 3:
+		return
+	var vertices: PackedVector2Array = data["vertices"]
+	var colors: PackedColorArray = data["colors"]
+	for i: int in indices.size():
+		vertices.append(points[indices[i]])
+		colors.append(color)
+	data["vertices"] = vertices
+	data["colors"] = colors
+
+
+func _polygon_mesh(polygons: Array, color: Color) -> ArrayMesh:
+	var data := {"vertices": PackedVector2Array(), "colors": PackedColorArray()}
+	for polygon_value: Variant in polygons:
+		var polygon: PackedVector2Array = polygon_value
+		_append_polygon_mesh(data, polygon, color)
+	var vertices: PackedVector2Array = data["vertices"]
+	var colors: PackedColorArray = data["colors"]
+	return _make_color_mesh(vertices, colors)
+
+
+func _closed_line_segments(points: PackedVector2Array) -> PackedVector2Array:
+	var closed := PackedVector2Array(points)
+	if closed.size() > 1 and closed[0].distance_squared_to(closed[closed.size() - 1]) >= 0.0001:
+		closed.append(closed[0])
+	return _line_segments(closed)
+
+
+func _build_static_geometry() -> void:
+	var land_polygons: Array = []
+	for ring: Dictionary in _land_rings:
+		land_polygons.append(ring["points"])
+		_coast_segments.append_array(_closed_line_segments(ring["points"]))
+	_land_mesh = _polygon_mesh(land_polygons, COL_LAND)
+
+	var lake_polygons: Array = []
+	for ring: Dictionary in _lake_rings:
+		lake_polygons.append(ring["points"])
+		_lake_shore_segments.append_array(_closed_line_segments(ring["points"]))
+	_lake_mesh = _polygon_mesh(lake_polygons, COL_LAKE)
+
+	var river_polygons: Array = []
+	for entry: Dictionary in _river_polys:
+		river_polygons.append(entry["points"])
+	_river_mesh = _polygon_mesh(river_polygons, COL_RIVER)
+
+	# Ocean outline colors depend on the distance level, so keep one batched
+	# line list per level (five calls instead of one call per outline ring).
+	for ring: Dictionary in _ocean_rings:
+		var level: int = int(ring["t"])
+		var segments: PackedVector2Array = _ocean_outline_segments.get(level, PackedVector2Array())
+		for points: PackedVector2Array in ring["rings"]:
+			segments.append_array(_closed_line_segments(points))
+		_ocean_outline_segments[level] = segments
+
+	var ice_polygons: Array = []
+	for ice_value: Variant in sim.pack.ice:
+		var ice: Dictionary = ice_value
+		var points: PackedVector2Array = ice.get("points", PackedVector2Array())
+		if points.size() < 3:
+			continue
+		ice_polygons.append(points)
+		_ice_outline_segments.append_array(_closed_line_segments(points))
+	_ice_mesh = _polygon_mesh(ice_polygons, Color(0.94, 0.97, 1.0, 0.92))
 
 
 func _mesh_from_cells(color_fn: Callable, alpha: float = 1.0, include_water: bool = false) -> ArrayMesh:
@@ -353,30 +449,22 @@ func _draw() -> void:
 		return
 	# --- ocean ---
 	draw_rect(Rect2(-sim.map_width, -sim.map_height, sim.map_width * 3.0, sim.map_height * 3.0), COL_OCEAN)
-	for ring: Dictionary in _ocean_rings:
-		var alpha: float = 0.5 + 0.1 * absf(int(ring["t"]))
+	for level_value: Variant in _ocean_outline_segments:
+		var level: int = int(level_value)
+		var alpha: float = 0.5 + 0.1 * absf(level)
 		var col := COL_OCEAN_OUTLINE
 		col.a = clampf(0.9 - alpha * 0.12, 0.15, 0.6)
-		for points: PackedVector2Array in ring["rings"]:
-			var closed := PackedVector2Array(points)
-			if closed.size() > 1:
-				closed.append(closed[0])
-				draw_polyline(closed, col, 1.2, true)
+		var segments: PackedVector2Array = _ocean_outline_segments[level]
+		if not segments.is_empty():
+			draw_multiline(segments, col, 1.2, true)
 
 	# --- landmasses ---
-	var land_color := COL_LAND
-	for ring: Dictionary in _land_rings:
-		var fill_pts := PackedVector2Array(ring["points"])
-		if fill_pts.size() > 1:
-			fill_pts.remove_at(fill_pts.size() - 1)
-		if fill_pts.size() >= 3:
-			draw_colored_polygon(fill_pts, land_color)
+	_draw_mesh(_land_mesh)
 
 	# --- lakes ---
-	for ring: Dictionary in _lake_rings:
-		var pts := PackedVector2Array(ring["points"])
-		draw_colored_polygon(PackedVector2Array(pts.slice(0, pts.size() - 1)) if pts.size() > 3 else pts, COL_LAKE)
-		draw_polyline(pts, COL_LAKE_SHORE, 0.8, true)
+	_draw_mesh(_lake_mesh)
+	if not _lake_shore_segments.is_empty():
+		draw_multiline(_lake_shore_segments, COL_LAKE_SHORE, 0.8, true)
 
 	# --- cell-based overlays (under rivers, over land) ---
 	if show_heights:
@@ -415,15 +503,14 @@ func _draw() -> void:
 		_draw_state_borders()
 
 	# --- coastlines (strokes on top of fills) ---
-	for ring: Dictionary in _land_rings:
-		draw_polyline(ring["points"], COL_COAST, 1.0, true)
-	for ring: Dictionary in _lake_rings:
-		draw_polyline(ring["points"], COL_COAST, 0.7, true)
+	if not _coast_segments.is_empty():
+		draw_multiline(_coast_segments, COL_COAST, 1.0, true)
+	if not _lake_shore_segments.is_empty():
+		draw_multiline(_lake_shore_segments, COL_COAST, 0.7, true)
 
 	# --- rivers ---
 	if show_rivers:
-		for entry: Dictionary in _river_polys:
-			draw_colored_polygon(entry["points"], COL_RIVER)
+		_draw_mesh(_river_mesh)
 
 	# --- relief icons (mountains and forests) ---
 	if show_relief_icons:
@@ -714,16 +801,9 @@ func _build_relief_icons() -> void:
 
 
 func _draw_ice() -> void:
-	var pack: FmgGraph = sim.pack
-	for ice: Variant in pack.ice:
-		var e: Dictionary = ice
-		var points: PackedVector2Array = e.get("points", PackedVector2Array())
-		if points.size() < 3:
-			continue
-		draw_colored_polygon(points, Color(0.94, 0.97, 1.0, 0.92))
-		var outline := PackedVector2Array(points)
-		outline.append(points[0])
-		draw_polyline(outline, Color(0.8, 0.88, 0.96, 0.9), 0.6, true)
+	_draw_mesh(_ice_mesh)
+	if not _ice_outline_segments.is_empty():
+		draw_multiline(_ice_outline_segments, Color(0.8, 0.88, 0.96, 0.9), 0.6, true)
 
 
 func _draw_goods() -> void:
