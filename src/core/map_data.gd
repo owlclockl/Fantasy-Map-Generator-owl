@@ -523,7 +523,10 @@ func load_map(path: String) -> Error:
 	grid.height = map_height
 	grid.points = _unpack_points(grid_data["points"])
 	grid.boundary = GridGenerator._boundary_points(map_width, map_height, grid.spacing)
-	_rebuild_voronoi(grid)
+	# The initial grid is triangulated with its outer pseudo-points. Reuse
+	# exactly that boundary on load; omitting it changes the outer Voronoi
+	# cells and was the source of clipped/corrupted map edges after reload.
+	_rebuild_voronoi(grid, true)
 	grid.h = PackedByteArray(Array(grid_data["h"]))
 
 	# grid-level climate + feature data is recomputed deterministically
@@ -582,6 +585,7 @@ func load_map(path: String) -> Error:
 	pack.markers = data.get("markers", [])
 	pack.zones = data.get("zones", [])
 	pack.markets = data.get("markets", [])
+	_normalize_loaded_market_goods()
 	pack.deals = data.get("deals", [])
 	pack.ice = _unpack_ice(data.get("ice", []))
 	pack.journeys = _unpack_journeys(data.get("journeys", []))
@@ -594,6 +598,22 @@ func load_map(path: String) -> Error:
 	burgs.states_limit = states_limit
 	burgs.burgs_limit = burgs_limit
 	return OK
+
+
+## JSON object keys are strings. Keep the in-memory market schema identical
+## to a freshly generated map so recipe production and trade code can be run
+## after loading as well.
+func _normalize_loaded_market_goods() -> void:
+	for market_value: Variant in pack.markets:
+		var market: Dictionary = market_value
+		var goods_value: Variant = market.get("goods", {})
+		if not goods_value is Dictionary:
+			market["goods"] = {}
+			continue
+		var normalized := {}
+		for key: Variant in (goods_value as Dictionary):
+			normalized[int(key)] = (goods_value as Dictionary)[key]
+		market["goods"] = normalized
 
 
 func _unpack_points(arr: Array) -> PackedVector2Array:
@@ -649,10 +669,13 @@ func _rebuild_route_links() -> void:
 		routes_gen.route_links = pack.route_links
 
 
-func _rebuild_voronoi(graph: FmgGraph) -> void:
-	var del := Delaunator.from_points(graph.points)
+func _rebuild_voronoi(graph: FmgGraph, include_boundary: bool = false) -> void:
+	var points := PackedVector2Array(graph.points)
+	if include_boundary:
+		points.append_array(graph.boundary)
+	var del := Delaunator.from_points(points)
 	var voronoi := FmgVoronoi.new()
-	voronoi._build(del, graph.points.size(), graph.points.size())
+	voronoi._build(del, points.size(), graph.points.size())
 	graph.voronoi = voronoi
 	graph.v = voronoi.cells.v
 	graph.c = voronoi.cells.c

@@ -515,13 +515,29 @@ func _export_heightmap(path: String) -> void:
 	var spacing: float = grid.spacing
 	var cells_x: int = grid.cells_x
 	var cells_y: int = grid.cells_y
-	var last_idx: int = grid.h.size() - 1
 	for y: int in height:
-		var row: int = mini(int(float(y) / spacing), cells_y - 1)
 		for x: int in width:
-			var col: int = mini(int(float(x) / spacing), cells_x - 1)
-			var idx: int = mini(row * cells_x + col, last_idx)
-			data[y * width + x] = clampi(int(round(float(grid.h[idx]) * 2.55)), 0, 255)
+			# Grid points are jittered, so a simple row*width lookup produces
+			# visible diagonal bands in the export. Pick the nearest point from
+			# the local 3x3 lattice neighbourhood; this is the same Voronoi
+			# sampling used by the generated terrain rather than a stretched
+			# texture approximation.
+			var center_col: int = clampi(int(floor(float(x) / spacing)), 0, cells_x - 1)
+			var center_row: int = clampi(int(floor(float(y) / spacing)), 0, cells_y - 1)
+			var nearest: int = 0
+			var nearest_d2: float = INF
+			for row: int in range(maxi(center_row - 1, 0), mini(center_row + 2, cells_y)):
+				for col: int in range(maxi(center_col - 1, 0), mini(center_col + 2, cells_x)):
+					var candidate: int = row * cells_x + col
+					if candidate >= grid.points.size():
+						continue
+					var dx: float = grid.points[candidate].x - float(x)
+					var dy: float = grid.points[candidate].y - float(y)
+					var d2: float = dx * dx + dy * dy
+					if d2 < nearest_d2:
+						nearest_d2 = d2
+						nearest = candidate
+			data[y * width + x] = clampi(int(round(float(grid.h[nearest]) * 2.55)), 0, 255)
 	var img := Image.create_from_data(width, height, false, Image.FORMAT_R8, data)
 	if img == null:
 		status_label.text = "Ошибка создания изображения"
@@ -540,7 +556,10 @@ func _export_geojson(path: String) -> void:
 		return
 	var features: Array = []
 	for i: int in pack.cell_count():
-		var poly := pack.get_polygon(i)
+		# Voronoi boundary cells may extend beyond the canvas. GeoJSON should
+		# describe the same visible map as the renderer, not those construction
+		# triangles outside the map rectangle.
+		var poly: PackedVector2Array = FmgPaths.clip_poly(pack.get_polygon(i), sim.map_width, sim.map_height)
 		if poly.size() < 3:
 			continue
 		var ring: Array = []

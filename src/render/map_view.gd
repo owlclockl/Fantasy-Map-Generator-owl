@@ -2,8 +2,9 @@ class_name MapView
 extends Node2D
 ## Renders the generated world: ocean, landmasses with fractal coastlines,
 ## lakes, rivers, overlays (political/biomes/cultures/religions/heights),
-## borders, burgs and labels. Each layer is a child Node2D whose draw commands
-## are recorded once and re-rasterized by the GPU on camera moves.
+## borders, burgs and labels. Static cell layers are uploaded as cached meshes;
+## camera moves therefore reuse the GPU command list instead of rebuilding a
+## draw call for every Voronoi cell.
 
 const COL_OCEAN := Color("#466eab")
 const COL_OCEAN_DEEP := Color("#3b5e94")
@@ -61,6 +62,32 @@ var _mountain_points: PackedVector2Array = PackedVector2Array()
 var _tree_points: PackedVector2Array = PackedVector2Array()
 var _font: Font = null
 
+# Geometry and meshes are built once per generated map. Drawing one mesh per
+# cell used to make the 10k/20k presets needlessly expensive: every redraw
+# recreated the Voronoi polygon and submitted thousands of draw calls. The
+# cached polygons also keep every overlay clipped to the map rectangle, which
+# prevents the boundary cells from bleeding into the UI margin.
+var _cell_polygons: Array = []
+var _biome_mesh: ArrayMesh = null
+var _height_mesh: ArrayMesh = null
+var _culture_mesh: ArrayMesh = null
+var _religion_mesh: ArrayMesh = null
+var _state_mesh: ArrayMesh = null
+var _province_mesh: ArrayMesh = null
+var _relief_mesh: ArrayMesh = null
+var _zones_mesh: ArrayMesh = null
+var _goods_mesh: ArrayMesh = null
+var _tree_mesh: ArrayMesh = null
+var _mountain_segments: PackedVector2Array = PackedVector2Array()
+var _tree_stem_segments: PackedVector2Array = PackedVector2Array()
+var _border_segments: PackedVector2Array = PackedVector2Array()
+var _province_border_segments: PackedVector2Array = PackedVector2Array()
+var _cell_border_segments: PackedVector2Array = PackedVector2Array()
+var _sea_route_segments: PackedVector2Array = PackedVector2Array()
+var _road_segments: PackedVector2Array = PackedVector2Array()
+var _trail_segments: PackedVector2Array = PackedVector2Array()
+var _journey_segments: PackedVector2Array = PackedVector2Array()
+
 # brush preview (set by main.gd)
 var brush_preview_visible: bool = false
 var brush_preview_pos := Vector2.ZERO
@@ -77,11 +104,32 @@ func rebuild_cache() -> void:
 	_ocean_rings = []
 	_river_polys = []
 	_feature_labels = []
+	_cell_polygons = []
+	_biome_mesh = null
+	_height_mesh = null
+	_culture_mesh = null
+	_religion_mesh = null
+	_state_mesh = null
+	_province_mesh = null
+	_relief_mesh = null
+	_zones_mesh = null
+	_goods_mesh = null
+	_tree_mesh = null
+	_mountain_segments = PackedVector2Array()
+	_tree_stem_segments = PackedVector2Array()
+	_border_segments = PackedVector2Array()
+	_province_border_segments = PackedVector2Array()
+	_cell_border_segments = PackedVector2Array()
+	_sea_route_segments = PackedVector2Array()
+	_road_segments = PackedVector2Array()
+	_trail_segments = PackedVector2Array()
+	_journey_segments = PackedVector2Array()
 	_mountain_points = PackedVector2Array()
 	_tree_points = PackedVector2Array()
 	if sim == null or sim.pack == null:
 		queue_redraw_all()
 		return
+	_build_cell_polygons()
 	_build_feature_labels()
 	_build_relief_icons()
 
@@ -133,7 +181,167 @@ func rebuild_cache() -> void:
 			if poly.size() >= 3:
 				_river_polys.append({"points": poly, "river": river})
 
+	# The rest of the render data is immutable until the next generation. Build
+	# it here rather than in _draw(), so toggling a layer only changes a single
+	# mesh draw call and never walks the complete Voronoi graph again.
+	_build_overlay_meshes()
+	_build_border_segments()
+	_build_route_segments()
+
 	queue_redraw_all()
+
+
+## Cache clipped Voronoi cells. Boundary cells in the packed graph can have
+## vertices outside the map; using the clipped version for every layer fixes
+## the thin triangles that otherwise appeared over the sidebar/margin.
+func _build_cell_polygons() -> void:
+	var pack: FmgGraph = sim.pack
+	_cell_polygons.resize(pack.cell_count())
+	for i: int in pack.cell_count():
+		var polygon: PackedVector2Array = pack.get_polygon(i)
+		_cell_polygons[i] = FmgPaths.clip_poly(polygon, sim.map_width, sim.map_height)
+
+
+func _mesh_from_cells(color_fn: Callable, alpha: float = 1.0, include_water: bool = false) -> ArrayMesh:
+	var vertices := PackedVector2Array()
+	var colors := PackedColorArray()
+	var pack: FmgGraph = sim.pack
+	for i: int in pack.cell_count():
+		if not include_water and pack.h[i] < 20:
+			continue
+		var polygon: PackedVector2Array = _cell_polygons[i]
+		if polygon.size() < 3:
+			continue
+		var color: Color = color_fn.call(i)
+		if color.a <= 0.0:
+			continue
+		color.a *= alpha
+		for j: int in range(1, polygon.size() - 1):
+			vertices.append(polygon[0])
+			vertices.append(polygon[j])
+			vertices.append(polygon[j + 1])
+			colors.append(color)
+			colors.append(color)
+			colors.append(color)
+	return _make_color_mesh(vertices, colors)
+
+
+func _make_color_mesh(vertices: PackedVector2Array, colors: PackedColorArray) -> ArrayMesh:
+	if vertices.is_empty():
+		return null
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_COLOR] = colors
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _build_overlay_meshes() -> void:
+	_biome_mesh = _mesh_from_cells(_cell_biome_color)
+	_height_mesh = _mesh_from_cells(_cell_height_color, 1.0, true)
+	_culture_mesh = _mesh_from_cells(_cell_culture_color, 0.65)
+	_religion_mesh = _mesh_from_cells(_cell_religion_color, 0.6)
+	_state_mesh = _mesh_from_cells(_cell_state_color, 0.55)
+	_province_mesh = _mesh_from_cells(_cell_province_color, 0.25)
+
+	var relief_vertices := PackedVector2Array()
+	var relief_colors := PackedColorArray()
+	var pack: FmgGraph = sim.pack
+	for i: int in pack.cell_count():
+		if pack.h[i] < 45:
+			continue
+		var polygon: PackedVector2Array = _cell_polygons[i]
+		if polygon.size() < 3:
+			continue
+		var strength: float = clampf((float(pack.h[i]) - 45.0) / 55.0, 0.0, 1.0) * 0.45
+		var color := Color(0.25, 0.2, 0.12, strength)
+		for j: int in range(1, polygon.size() - 1):
+			relief_vertices.append(polygon[0])
+			relief_vertices.append(polygon[j])
+			relief_vertices.append(polygon[j + 1])
+			relief_colors.append(color)
+			relief_colors.append(color)
+			relief_colors.append(color)
+	_relief_mesh = _make_color_mesh(relief_vertices, relief_colors)
+
+	var zone_vertices := PackedVector2Array()
+	var zone_colors := PackedColorArray()
+	for zone_value: Variant in pack.zones:
+		var zone: Dictionary = zone_value
+		var color := Color.html(str(zone.get("color", "#888888")))
+		color.a = 0.16
+		for cell_value: Variant in zone.get("cells", []):
+			var cell_id: int = int(cell_value)
+			if cell_id < 0 or cell_id >= _cell_polygons.size():
+				continue
+			var polygon: PackedVector2Array = _cell_polygons[cell_id]
+			if polygon.size() < 3:
+				continue
+			for j: int in range(1, polygon.size() - 1):
+				zone_vertices.append(polygon[0])
+				zone_vertices.append(polygon[j])
+				zone_vertices.append(polygon[j + 1])
+				zone_colors.append(color)
+				zone_colors.append(color)
+				zone_colors.append(color)
+	_zones_mesh = _make_color_mesh(zone_vertices, zone_colors)
+
+	var good_vertices := PackedVector2Array()
+	var good_colors := PackedColorArray()
+	for i: int in pack.cell_count():
+		var good_id: int = pack.good[i]
+		if good_id <= 0 or good_id > FmgGoods.GOODS_DATA.size():
+			continue
+		var color: Color = Color.html(FmgGoods.GOODS_DATA[good_id - 1]["color"])
+		var p: Vector2 = pack.points[i]
+		var a := p + Vector2(-1.4, -1.4)
+		var b := p + Vector2(1.4, -1.4)
+		var c := p + Vector2(1.4, 1.4)
+		var d := p + Vector2(-1.4, 1.4)
+		var inner_a := p + Vector2(-0.7, -0.7)
+		var inner_b := p + Vector2(0.7, -0.7)
+		var inner_c := p + Vector2(0.7, 0.7)
+		var inner_d := p + Vector2(-0.7, 0.7)
+		var dark := color.darkened(0.35)
+		for tri: Array in [[a, b, c], [a, c, d]]:
+			for point: Vector2 in tri:
+				good_vertices.append(point)
+				good_colors.append(dark)
+		for tri: Array in [[inner_a, inner_b, inner_c], [inner_a, inner_c, inner_d]]:
+			for point: Vector2 in tri:
+				good_vertices.append(point)
+				good_colors.append(color)
+	_goods_mesh = _make_color_mesh(good_vertices, good_colors)
+
+	# Relief glyphs are also static. Batch the many small tree triangles and
+	# mountain strokes so dense maps do not turn their icons into thousands of
+	# individual CanvasItem commands.
+	var tree_vertices := PackedVector2Array()
+	var tree_colors := PackedColorArray()
+	var tree_color := Color(0.15, 0.35, 0.15, 0.5)
+	for p: Vector2 in _mountain_points:
+		_mountain_segments.append(p + Vector2(-2.6, 1.6))
+		_mountain_segments.append(p + Vector2(0, -2.6))
+		_mountain_segments.append(p + Vector2(0, -2.6))
+		_mountain_segments.append(p + Vector2(2.6, 1.6))
+	for p: Vector2 in _tree_points:
+		_tree_stem_segments.append(p + Vector2(0, 1.4))
+		_tree_stem_segments.append(p + Vector2(0, 0.2))
+		var pts := PackedVector2Array([
+			p + Vector2(-1.3, 0.6), p + Vector2(0, -1.8), p + Vector2(1.3, 0.6)
+		])
+		tree_vertices.append_array(pts)
+		tree_colors.append(tree_color)
+		tree_colors.append(tree_color)
+		tree_colors.append(tree_color)
+	_tree_mesh = _make_color_mesh(tree_vertices, tree_colors)
+
+
+func _draw_mesh(mesh: ArrayMesh) -> void:
+	if mesh != null:
+		draw_mesh(mesh, Transform2D.IDENTITY, Color.WHITE)
 
 
 func queue_redraw_all() -> void:
@@ -172,20 +380,20 @@ func _draw() -> void:
 
 	# --- cell-based overlays (under rivers, over land) ---
 	if show_heights:
-		_draw_cell_overlay(_cell_height_color, 1.0)
+		_draw_mesh(_height_mesh)
 	elif show_cultures:
-		_draw_cell_overlay(_cell_culture_color, 0.65)
+		_draw_mesh(_culture_mesh)
 	elif show_religions:
-		_draw_cell_overlay(_cell_religion_color, 0.6)
+		_draw_mesh(_religion_mesh)
 	else:
 		if show_biomes:
-			_draw_cell_overlay(_cell_biome_color, 1.0)
-		if show_relief and not show_heights:
-			_draw_relief_shading()
+			_draw_mesh(_biome_mesh)
+		if show_relief:
+			_draw_mesh(_relief_mesh)
 		if show_politics:
-			_draw_cell_overlay(_cell_state_color, 0.55)
+			_draw_mesh(_state_mesh)
 		if show_provinces:
-			_draw_cell_overlay(_cell_province_color, 0.25)
+			_draw_mesh(_province_mesh)
 
 	# --- ice (glaciers on land, icebergs on water) ---
 	if show_ice:
@@ -193,11 +401,11 @@ func _draw() -> void:
 
 	# --- zones (translucent named areas) ---
 	if show_zones:
-		_draw_zones()
+		_draw_mesh(_zones_mesh)
 
 	# --- goods (resource dots) ---
 	if show_goods:
-		_draw_goods()
+		_draw_mesh(_goods_mesh)
 
 	if show_cell_borders:
 		_draw_cell_borders()
@@ -260,6 +468,8 @@ func _cell_color_safe(_cell_id: int) -> Color:
 
 
 func _draw_cell_overlay(color_fn: Callable, alpha: float) -> void:
+	# Kept as a small fallback for tools that call this method directly. Normal
+	# rendering uses the prebuilt meshes above.
 	var pack: FmgGraph = sim.pack
 	for i: int in pack.cell_count():
 		if pack.h[i] < 20:
@@ -268,24 +478,15 @@ func _draw_cell_overlay(color_fn: Callable, alpha: float) -> void:
 		if color.a <= 0.0:
 			continue
 		color.a *= alpha
-		var poly := pack.get_polygon(i)
+		var poly: PackedVector2Array = _cell_polygons[i]
 		if poly.size() >= 3:
 			draw_colored_polygon(poly, color)
 
 
 func _draw_relief_shading() -> void:
-	# soft shadow on higher cells: multiply-ish tint
-	var pack: FmgGraph = sim.pack
-	for i: int in pack.cell_count():
-		if pack.h[i] < 20:
-			continue
-		var h: float = float(pack.h[i])
-		if h < 45.0:
-			continue
-		var strength: float = clampf((h - 45.0) / 55.0, 0.0, 1.0) * 0.45
-		var poly := pack.get_polygon(i)
-		if poly.size() >= 3:
-			draw_colored_polygon(poly, Color(0.25, 0.2, 0.12, strength))
+	# Compatibility wrapper for callers from older scenes. The actual render
+	# path is the cached relief mesh.
+	_draw_mesh(_relief_mesh)
 
 
 func _cell_biome_color(i: int) -> Color:
@@ -332,7 +533,7 @@ func _cell_height_color(i: int) -> Color:
 	return HYPSO[idx].lerp(HYPSO[idx + 1], seg - float(idx))
 
 
-func _draw_cell_borders() -> void:
+func _build_border_segments() -> void:
 	var pack: FmgGraph = sim.pack
 	var vertices := pack.voronoi.vertices
 	for i: int in pack.cell_count():
@@ -341,53 +542,42 @@ func _draw_cell_borders() -> void:
 		for n: int in pack.c[i]:
 			if n < i or pack.h[n] < 20:
 				continue
-			var common := PackedInt32Array()
-			for v1: int in pack.v[i]:
-				for v2: int in pack.v[n]:
-					if v1 == v2:
-						common.append(v1)
-			if common.size() >= 2:
-				draw_line(vertices.p[common[0]], vertices.p[common[1]], Color(0, 0, 0, 0.15), 0.5, true)
+			var common := _common_edge_vertices(pack, i, n)
+			if common.size() < 2:
+				continue
+			var a: Vector2 = vertices.p[common[0]]
+			var b: Vector2 = vertices.p[common[1]]
+			_cell_border_segments.append(a)
+			_cell_border_segments.append(b)
+			if pack.state[i] != pack.state[n]:
+				_border_segments.append(a)
+				_border_segments.append(b)
+			if pack.province[i] != pack.province[n]:
+				_province_border_segments.append(a)
+				_province_border_segments.append(b)
+
+
+func _common_edge_vertices(pack: FmgGraph, first: int, second: int) -> PackedInt32Array:
+	var common := PackedInt32Array()
+	for vertex_id: int in pack.v[first]:
+		if pack.v[second].has(vertex_id):
+			common.append(vertex_id)
+	return common
+
+
+func _draw_cell_borders() -> void:
+	if not _cell_border_segments.is_empty():
+		draw_multiline(_cell_border_segments, Color(0, 0, 0, 0.15), 0.5, true)
 
 
 func _draw_state_borders() -> void:
-	var pack: FmgGraph = sim.pack
-	var vertices := pack.voronoi.vertices
-	for i: int in pack.cell_count():
-		if pack.h[i] < 20:
-			continue
-		for n: int in pack.c[i]:
-			if n < i or pack.h[n] < 20:
-				continue
-			if pack.state[i] == pack.state[n]:
-				continue
-			var common := PackedInt32Array()
-			for v1: int in pack.v[i]:
-				for v2: int in pack.v[n]:
-					if v1 == v2:
-						common.append(v1)
-			if common.size() >= 2:
-				draw_line(vertices.p[common[0]], vertices.p[common[1]], COL_BORDER, 1.4, true)
+	if not _border_segments.is_empty():
+		draw_multiline(_border_segments, COL_BORDER, 1.4, true)
 
 
 func _draw_province_borders() -> void:
-	var pack: FmgGraph = sim.pack
-	var vertices := pack.voronoi.vertices
-	for i: int in pack.cell_count():
-		if pack.h[i] < 20:
-			continue
-		for n: int in pack.c[i]:
-			if n < i or pack.h[n] < 20:
-				continue
-			if pack.province[i] == pack.province[n]:
-				continue
-			var common := PackedInt32Array()
-			for v1: int in pack.v[i]:
-				for v2: int in pack.v[n]:
-					if v1 == v2:
-						common.append(v1)
-			if common.size() >= 2:
-				draw_line(vertices.p[common[0]], vertices.p[common[1]], COL_PROVINCE_BORDER, 0.8, true)
+	if not _province_border_segments.is_empty():
+		draw_multiline(_province_border_segments, COL_PROVINCE_BORDER, 0.8, true)
 
 
 func _draw_burgs() -> void:
@@ -564,37 +754,72 @@ func _draw_zones() -> void:
 				draw_colored_polygon(poly, color)
 
 
-func _draw_routes() -> void:
+func _build_route_segments() -> void:
 	var pack: FmgGraph = sim.pack
-	# sea routes first (under land roads)
-	for route: Variant in pack.routes:
-		var r: Dictionary = route
-		if r.get("group", "") != "searoutes":
-			continue
-		var points: PackedVector2Array = r.get("points", PackedVector2Array())
-		if points.size() >= 2:
-			_draw_dashed(points, Color("#4a7ab5"), 0.7, 6.0, 3.0)
-	for route: Variant in pack.routes:
-		var r: Dictionary = route
-		var group: String = r.get("group", "")
-		if group == "searoutes":
-			continue
-		var points: PackedVector2Array = r.get("points", PackedVector2Array())
+	for route_value: Variant in pack.routes:
+		var route: Dictionary = route_value
+		var points: PackedVector2Array = route.get("points", PackedVector2Array())
 		if points.size() < 2:
 			continue
-		if group == "roads":
-			draw_polyline(points, Color("#7a5c3e"), 1.1, true)
-		else:
-			_draw_dashed(points, Color("#8a7355"), 0.6, 3.0, 2.0)
+		match route.get("group", ""):
+			"searoutes":
+				_sea_route_segments.append_array(_dashed_segments(points, 6.0, 3.0))
+			"roads":
+				_road_segments.append_array(_line_segments(points))
+			_:
+				_trail_segments.append_array(_dashed_segments(points, 3.0, 2.0))
+	for journey_value: Variant in pack.journeys:
+		var journey: Dictionary = journey_value
+		var points: PackedVector2Array = journey.get("points", PackedVector2Array())
+		if points.size() >= 2:
+			_journey_segments.append_array(_dashed_segments(points, 5.0, 3.0))
+
+
+func _line_segments(points: PackedVector2Array) -> PackedVector2Array:
+	var result := PackedVector2Array()
+	for i: int in points.size() - 1:
+		result.append(points[i])
+		result.append(points[i + 1])
+	return result
+
+
+func _dashed_segments(points: PackedVector2Array, dash: float, gap: float) -> PackedVector2Array:
+	var result := PackedVector2Array()
+	var cycle: float = dash + gap
+	var acc: float = 0.0
+	for i: int in points.size() - 1:
+		var a: Vector2 = points[i]
+		var b: Vector2 = points[i + 1]
+		var seg_len: float = a.distance_to(b)
+		if seg_len <= 0.0:
+			continue
+		var t: float = 0.0
+		while t < seg_len:
+			var pos_in_cycle: float = fmod(acc, cycle)
+			var drawing: bool = pos_in_cycle < dash
+			var remaining_in_phase: float = (dash - pos_in_cycle) if drawing else (cycle - pos_in_cycle)
+			var step: float = minf(remaining_in_phase, seg_len - t)
+			if drawing:
+				result.append(a.lerp(b, t / seg_len))
+				result.append(a.lerp(b, (t + step) / seg_len))
+			t += step
+			acc += step
+	return result
+
+
+func _draw_routes() -> void:
+	# Every array contains line pairs, so a whole route layer is one draw call.
+	if not _sea_route_segments.is_empty():
+		draw_multiline(_sea_route_segments, Color("#4a7ab5"), 0.7, true)
+	if not _road_segments.is_empty():
+		draw_multiline(_road_segments, Color("#7a5c3e"), 1.1, true)
+	if not _trail_segments.is_empty():
+		draw_multiline(_trail_segments, Color("#8a7355"), 0.6, true)
 
 
 func _draw_journeys() -> void:
-	var pack: FmgGraph = sim.pack
-	for journey: Variant in pack.journeys:
-		var j: Dictionary = journey
-		var points: PackedVector2Array = j.get("points", PackedVector2Array())
-		if points.size() >= 2:
-			_draw_dashed(points, Color("#c0392b"), 1.2, 5.0, 3.0)
+	if not _journey_segments.is_empty():
+		draw_multiline(_journey_segments, Color("#c0392b"), 1.2, true)
 
 
 func _draw_dashed(points: PackedVector2Array, color: Color, width: float, dash: float, gap: float) -> void:
@@ -767,15 +992,11 @@ func _draw_charge(charge: String, pos: Vector2, r: float, color: Color) -> void:
 
 
 func _draw_relief_icons() -> void:
-	var mountain := Color(0.35, 0.3, 0.25, 0.55)
-	for p: Vector2 in _mountain_points:
-		var pts := PackedVector2Array([p + Vector2(-2.6, 1.6), p + Vector2(0, -2.6), p + Vector2(2.6, 1.6)])
-		draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2]]), mountain, 0.7, true)
-	var tree := Color(0.15, 0.35, 0.15, 0.5)
-	for p: Vector2 in _tree_points:
-		draw_line(p + Vector2(0, 1.4), p + Vector2(0, 0.2), tree, 0.6, true)
-		var pts := PackedVector2Array([p + Vector2(-1.3, 0.6), p + Vector2(0, -1.8), p + Vector2(1.3, 0.6)])
-		draw_colored_polygon(pts, tree)
+	if not _mountain_segments.is_empty():
+		draw_multiline(_mountain_segments, Color(0.35, 0.3, 0.25, 0.55), 0.7, true)
+	if not _tree_stem_segments.is_empty():
+		draw_multiline(_tree_stem_segments, Color(0.15, 0.35, 0.15, 0.5), 0.6, true)
+	_draw_mesh(_tree_mesh)
 
 
 func _draw_feature_labels() -> void:
