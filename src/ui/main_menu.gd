@@ -178,7 +178,7 @@ func _build_trigger() -> void:
 	new_map_button.text = "Новая карта!"
 	new_map_button.tooltip_text = "Сгенерировать новую карту (F2)"
 	new_map_button.visible = false
-	new_map_button.pressed.connect(func() -> void: generate_requested.emit())
+	new_map_button.pressed.connect(request_new_map)
 	_style_tag(new_map_button, "accent")
 	trigger_box.add_child(new_map_button)
 
@@ -907,10 +907,18 @@ func _on_drag_bar_input(event: InputEvent, _bar: Control) -> void:
 			clampf(target.y, 0.0, maxf(size.y - 60.0, 0.0)))
 
 
+func request_new_map() -> void:
+	if _busy:
+		return
+	if seed_edit != null:
+		seed_edit.text = str(randi() % 1000000000)
+	generate_requested.emit()
+
+
 func _on_sticked_pressed(id: String) -> void:
 	match id:
 		"new":
-			generate_requested.emit()
+			request_new_map()
 		"export":
 			if export_button != null:
 				export_popup.position = export_button.global_position + Vector2(0, 24)
@@ -1036,7 +1044,7 @@ func _refresh_omnibar(query: String) -> void:
 
 func _collect_actions() -> Array:
 	var actions: Array = []
-	actions.append({"title": "Новая карта (F2)", "run": func() -> void: generate_requested.emit()})
+	actions.append({"title": "Новая карта (F2)", "run": func() -> void: request_new_map()})
 	actions.append({"title": "Показать всю карту (0)", "run": func() -> void: fit_requested.emit()})
 	actions.append({"title": "Сохранить карту", "run": func() -> void: save_requested.emit()})
 	actions.append({"title": "Загрузить карту", "run": func() -> void: load_requested.emit()})
@@ -1142,23 +1150,39 @@ func set_progress(value: float) -> void:
 
 ## Push current UI values into the simulation (before generation).
 func apply_generation_options() -> void:
-	sim.seed_value = seed_edit.text.strip_edges()
-	if sim.seed_value.is_empty():
-		sim.seed_value = str(randi() % 1000000000)
-		seed_edit.text = sim.seed_value
-	var template_id: Variant = template_option.get_item_metadata(template_option.selected)
-	sim.template_id = str(template_id) if template_id != null else "random"
-	sim.cells_desired = POINTS_BY_DENSITY[density_option.get_selected_id()]
-	sim.map_width = float(map_width_spin.value)
-	sim.map_height = float(map_height_spin.value)
-	sim.cultures_limit = int(cultures_spin.value)
-	sim.cultures_set = str(cultures_set_option.get_selected_metadata())
-	sim.states_limit = int(states_spin.value)
-	sim.religions_limit = int(religions_spin.value)
-	sim.provinces_ratio = float(provinces_ratio_spin.value)
-	sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
+	if seed_edit != null:
+		sim.seed_value = seed_edit.text.strip_edges()
+		if sim.seed_value.is_empty():
+			sim.seed_value = str(randi() % 1000000000)
+			seed_edit.text = sim.seed_value
+	if template_option != null and template_option.selected >= 0:
+		var template_id: Variant = template_option.get_item_metadata(template_option.selected)
+		sim.template_id = str(template_id) if template_id != null else "random"
+	if density_option != null:
+		var d_id: int = density_option.get_selected_id()
+		if POINTS_BY_DENSITY.has(d_id):
+			sim.cells_desired = POINTS_BY_DENSITY[d_id]
+	if map_width_spin != null:
+		sim.map_width = float(map_width_spin.value)
+	if map_height_spin != null:
+		sim.map_height = float(map_height_spin.value)
+	if cultures_spin != null:
+		sim.cultures_limit = int(cultures_spin.value)
+	if cultures_set_option != null and cultures_set_option.selected >= 0:
+		var c_set: Variant = cultures_set_option.get_item_metadata(cultures_set_option.selected)
+		if c_set != null:
+			sim.cultures_set = str(c_set)
+	if states_spin != null:
+		sim.states_limit = int(states_spin.value)
+	if religions_spin != null:
+		sim.religions_limit = int(religions_spin.value)
+	if provinces_ratio_spin != null:
+		sim.provinces_ratio = float(provinces_ratio_spin.value)
+	if burgs_check != null:
+		sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
 	sim.poles_cache = {}
-	view.distance_scale = float(distance_scale_spin.value)
+	if distance_scale_spin != null and view != null:
+		view.distance_scale = float(distance_scale_spin.value)
 
 
 ## Refresh controls from the simulation (after load).

@@ -120,8 +120,17 @@ func _ui_smoke() -> void:
 	if not view.show_biomes:
 		issues += 1
 		print("[smoke] layer hotkey failed")
+	menu.apply_generation_options()
+	var requested_flag := [false]
+	var test_sub := func(): requested_flag[0] = true
+	menu.generate_requested.connect(test_sub)
+	menu.request_new_map()
+	menu.generate_requested.disconnect(test_sub)
+	if not requested_flag[0]:
+		issues += 1
+		print("[smoke] request_new_map failed")
 	if issues == 0:
-		print("[smoke] UI tree OK (tabs, presets, overviews, hotkeys)")
+		print("[smoke] UI tree OK (tabs, presets, overviews, hotkeys, options)")
 
 
 func _count_manufacturing() -> int:
@@ -342,7 +351,10 @@ func _handle_hotkey(keycode: int) -> bool:
 			menu.toggle_menu()
 			return true
 		KEY_F2:
-			_on_generate_requested()
+			if menu != null:
+				menu.request_new_map()
+			else:
+				_on_generate_requested()
 			return true
 		KEY_0:
 			camera.fit_to_map()

@@ -98,6 +98,7 @@ var _feature_labels: Array = [] # {name, pos, size, color}
 var _mountain_points: PackedVector2Array = PackedVector2Array()
 var _tree_points: PackedVector2Array = PackedVector2Array()
 var _font: Font = null
+var _font_sans: Font = null
 
 # Geometry and meshes are built once per generated map. Drawing one mesh per
 # cell used to make the 10k/20k presets needlessly expensive: every redraw
@@ -153,7 +154,26 @@ var brush_preview_radius: float = 40.0
 
 
 func _ready() -> void:
-	_font = ThemeDB.fallback_font
+	var serif := SystemFont.new()
+	serif.font_names = PackedStringArray([
+		"Georgia", "Times New Roman", "DejaVu Serif", "Noto Serif", "Palatino", "Serif",
+		"DejaVu Sans", "Noto Sans", "Segoe UI", "Arial", "sans-serif"
+	])
+	serif.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_AUTO
+	serif.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
+	if ThemeDB.fallback_font != null:
+		serif.fallbacks = [ThemeDB.fallback_font]
+	_font = serif
+
+	var sans := SystemFont.new()
+	sans.font_names = PackedStringArray([
+		"Segoe UI", "DejaVu Sans", "Noto Sans", "Liberation Sans", "Arial", "Helvetica", "sans-serif"
+	])
+	sans.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_AUTO
+	sans.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
+	if ThemeDB.fallback_font != null:
+		sans.fallbacks = [ThemeDB.fallback_font]
+	_font_sans = sans
 
 
 func rebuild_cache() -> void:
@@ -705,12 +725,12 @@ func _draw() -> void:
 
 	# --- screen-space furniture: scale bar + vignette ---
 	var screen_size: Vector2 = get_viewport_rect().size
-	draw_set_transform_matrix(Transform2D())
+	draw_set_transform_matrix(get_viewport_transform().affine_inverse())
 	if show_scale_bar:
 		_draw_scale_bar(screen_size)
 	if show_vignette and _vignette_texture != null:
 		draw_texture_rect(_vignette_texture, Rect2(Vector2.ZERO, screen_size), false)
-	draw_set_transform_matrix(get_viewport_transform())
+	draw_set_transform_matrix(Transform2D.IDENTITY)
 
 
 func _cell_color_safe(_cell_id: int) -> Color:
@@ -855,13 +875,22 @@ func _draw_labels() -> void:
 			continue
 		var pole: Vector2 = sim.poles_cache[state["i"]]
 		var cells: int = state.get("cells", 10)
-		var font_size: float = clampf(sqrt(float(cells)) * 2.2, 9.0, 34.0) * style_label_scale
+		var font_size: float = clampf(sqrt(float(cells)) * 2.2, 11.0, 36.0) * style_label_scale
+		var font_size_int: int = maxi(int(round(font_size)), 9)
 		var name_v: String = state.get("fullName", state["name"])
-		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size)).x
-		draw_string_outline(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, int(font_size), 3, COL_TEXT_OUT)
-		draw_string(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, int(font_size), style_text)
+		if name_v.is_empty():
+			continue
+		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size_int).x
+		var ascent: float = _font.get_ascent(font_size_int)
+		var descent: float = _font.get_descent(font_size_int)
+		var baseline_y: float = pole.y + (ascent - descent) * 0.5
+		var label_pos := Vector2(pole.x - width / 2.0, baseline_y)
+		var outline_size: int = 3 if font_size_int >= 14 else 2
+		draw_string_outline(_font, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size_int, outline_size, COL_TEXT_OUT)
+		draw_string(_font, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size_int, style_text)
 
 	# burg labels
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
 	for b in sim.pack.burgs:
 		if b == null:
 			continue
@@ -869,11 +898,17 @@ func _draw_labels() -> void:
 		var is_capital: bool = b.get("capital", 0) == 1
 		if pop < 2.0 and not is_capital:
 			continue
-		var font_size: float = 4.5 if is_capital else clampf(2.5 + pop / 12.0, 3.0, 5.0)
-		font_size *= style_label_scale
-		var pos := Vector2(b["x"], b["y"]) + Vector2(0, 4.0 + font_size * 0.9)
-		draw_string_outline(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), 2, COL_TEXT_OUT)
-		draw_string(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), style_text)
+		var base_size: float = 12.0 if is_capital else clampf(8.5 + pop / 10.0, 8.5, 12.0)
+		var font_size: int = maxi(int(round(base_size * style_label_scale)), 7)
+		var b_name: String = str(b.get("name", ""))
+		if b_name.is_empty():
+			continue
+		var width: float = font_to_use.get_string_size(b_name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		var radius: float = 3.4 if is_capital else 1.7
+		var pos := Vector2(b["x"] - width / 2.0, b["y"] + radius + font_size + 1.0)
+		var outline_size: int = 2 if font_size >= 10 else 1
+		draw_string_outline(font_to_use, pos, b_name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, outline_size, COL_TEXT_OUT)
+		draw_string(font_to_use, pos, b_name, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, style_text)
 
 
 # ---------------------------------------------------------------------------
@@ -1247,28 +1282,42 @@ func _draw_feature_labels() -> void:
 	for label: Dictionary in _feature_labels:
 		var name_v: String = label["name"]
 		var pos: Vector2 = label["pos"]
-		var font_size: int = int(label["size"])
+		var base_size: float = float(label["size"])
+		var font_size: int = maxi(int(round(base_size * style_label_scale)), 8)
 		var color: Color = label["color"]
 		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-		var start := pos + Vector2(-width / 2.0, font_size * 0.35)
+		var ascent: float = _font.get_ascent(font_size)
+		var descent: float = _font.get_descent(font_size)
+		var start := pos + Vector2(-width / 2.0, (ascent - descent) * 0.5)
+		var out_size: int = 3 if font_size >= 14 else 2
 		var out_col: Color = Color(0.1, 0.15, 0.2, 0.55) if label["type"] == "island" else Color(0.05, 0.1, 0.2, 0.4)
-		draw_string_outline(_font, start, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 3, out_col)
+		draw_string_outline(_font, start, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, out_size, out_col)
 		draw_string(_font, start, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
 
 
 func _draw_province_labels() -> void:
 	var pack: FmgGraph = sim.pack
+	var font_size: int = maxi(int(round(10.0 * style_label_scale)), 8)
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
+	var ascent: float = font_to_use.get_ascent(font_size)
+	var descent: float = font_to_use.get_descent(font_size)
 	for province in pack.provinces:
 		if province == null:
 			continue
-		var burg_id: int = int(province.get("burg", 0))
-		if burg_id <= 0 or burg_id >= pack.burgs.size() or pack.burgs[burg_id] == null:
-			continue
-		var burg: Dictionary = pack.burgs[burg_id]
-		var pos := Vector2(burg["x"], burg["y"]) + Vector2(0.0, 8.0)
+		var pole: Vector2 = province.get("pole", Vector2.ZERO)
+		if pole == Vector2.ZERO:
+			var burg_id: int = int(province.get("burg", 0))
+			if burg_id > 0 and burg_id < pack.burgs.size() and pack.burgs[burg_id] != null:
+				pole = Vector2(pack.burgs[burg_id]["x"], pack.burgs[burg_id]["y"])
+			else:
+				continue
 		var name_v: String = province.get("fullName", province.get("name", ""))
-		draw_string_outline(_font, pos, name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, 5, 2, COL_TEXT_OUT)
-		draw_string(_font, pos, name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, 5, Color(0.2, 0.2, 0.3, 0.8))
+		if name_v.is_empty():
+			continue
+		var width: float = font_to_use.get_string_size(name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		var label_pos := pole + Vector2(-width / 2.0, (ascent - descent) * 0.5)
+		draw_string_outline(font_to_use, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 2, COL_TEXT_OUT)
+		draw_string(font_to_use, label_pos, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.2, 0.2, 0.3, 0.85))
 
 
 # ---------------------------------------------------------------------------
@@ -1502,8 +1551,9 @@ func _draw_coordinates() -> void:
 		draw_multiline(segments, col, 0.5, true)
 	for label_value: Variant in labels:
 		var label: Dictionary = label_value
-		draw_string_outline(_font, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, 2, Color(1, 1, 1, 0.65))
-		draw_string(_font, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, col)
+		var font_to_use: Font = _font_sans if _font_sans != null else _font
+		draw_string_outline(font_to_use, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, 2, Color(1, 1, 1, 0.75))
+		draw_string(font_to_use, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 9, col)
 
 
 ## Measure tool: polyline through ruler_points with a running distance label.
@@ -1565,15 +1615,19 @@ func _draw_compass(center: Vector2, radius: float) -> void:
 			draw_colored_polygon(PackedVector2Array([center, tip, right]), Color(light, 0.7))
 	draw_circle(center, radius * 0.07, dark)
 	draw_circle(center, radius * 0.035, light)
-	# N E S W letters
-	var letters := [["N", 0.0], ["E", PI / 2.0], ["S", PI], ["W", -PI / 2.0]]
+	# N E S W letters (Godot 2D coordinates: -PI/2 is North/up, 0 is East/right, PI/2 is South/down, PI is West/left)
+	var letters := [["N", -PI / 2.0], ["E", 0.0], ["S", PI / 2.0], ["W", PI]]
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
 	for entry: Array in letters:
 		var angle: float = float(entry[1])
 		var pos := center + Vector2(cos(angle), sin(angle)) * radius * 1.12
 		var letter: String = str(entry[0])
-		var width: float = _font.get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
-		draw_string_outline(_font, pos + Vector2(-width / 2.0, 5.0), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 3, Color(1, 1, 1, 0.75))
-		draw_string(_font, pos + Vector2(-width / 2.0, 5.0), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#33465e"))
+		var width: float = font_to_use.get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		var ascent: float = font_to_use.get_ascent(13)
+		var descent: float = font_to_use.get_descent(13)
+		var draw_pos := pos + Vector2(-width / 2.0, (ascent - descent) * 0.5)
+		draw_string_outline(font_to_use, draw_pos, letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 3, Color(1, 1, 1, 0.75))
+		draw_string(font_to_use, draw_pos, letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#33465e"))
 
 
 ## Screen-fixed scale bar in the bottom-left corner, like the original's.
@@ -1597,9 +1651,10 @@ func _draw_scale_bar(screen_size: Vector2) -> void:
 	draw_rect(Rect2(pos, Vector2(bar_px, bar_height)), Color(0.08, 0.1, 0.12), false, 1.0)
 	var label: String = "%s км" % _format_number(nice)
 	var label_size: int = 12
-	var width: float = _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size).x
-	draw_string_outline(_font, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, 3, Color(1, 1, 1, 0.8))
-	draw_string(_font, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, Color(0.08, 0.1, 0.12))
+	var font_to_use: Font = _font_sans if _font_sans != null else _font
+	var width: float = font_to_use.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size).x
+	draw_string_outline(font_to_use, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, 3, Color(1, 1, 1, 0.8))
+	draw_string(font_to_use, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, Color(0.08, 0.1, 0.12))
 
 
 func _format_number(value: float) -> String:

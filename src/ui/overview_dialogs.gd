@@ -30,6 +30,7 @@ func setup(sim_ref: FmgSim, view_ref: MapView, theme_ref: FmgUiTheme) -> void:
 	window = PanelContainer.new()
 	window.visible = false
 	window.custom_minimum_size = WINDOW_SIZE
+	window.set_meta("fmg", "panel")
 	window.add_theme_font_override("font", FmgUiTheme.mono())
 	window.add_theme_font_size_override("font_size", 12)
 	add_child(window)
@@ -143,6 +144,10 @@ func _start_table(columns: Array) -> void:
 		var label := Label.new()
 		label.text = column
 		label.set_meta("fmg", "table_header")
+		label.add_theme_font_override("font", FmgUiTheme.mono())
+		label.add_theme_font_size_override("font_size", 12)
+		if ui_theme != null:
+			label.add_theme_color_override("font_color", ui_theme.dark_solid)
 		table_grid.add_child(label)
 
 
@@ -171,7 +176,10 @@ func _apply_filter(_query: String) -> void:
 		for value: Variant in row["values"]:
 			var label := Label.new()
 			label.text = str(value)
+			label.set_meta("fmg", "label")
+			label.add_theme_font_override("font", FmgUiTheme.mono())
 			label.add_theme_font_size_override("font_size", 12)
+			label.add_theme_color_override("font_color", FmgUiTheme.TEXT_COLOR)
 			label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			table_grid.add_child(label)
 		shown += 1

@@ -36,8 +36,10 @@ static func mono() -> Font:
 		var system := SystemFont.new()
 		system.font_names = PackedStringArray([
 			"Consolas", "Menlo", "DejaVu Sans Mono", "Liberation Mono",
-			"Noto Sans Mono", "Courier New", "Monospace"
+			"Noto Sans Mono", "Courier New", "Monospace", "system-ui", "sans-serif"
 		])
+		if ThemeDB.fallback_font != null:
+			system.fallbacks = [ThemeDB.fallback_font]
 		_mono = system
 	return _mono
 
@@ -171,6 +173,8 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_disabled_color", Color(0.4, 0.35, 0.4))
 				node.add_theme_color_override("icon_normal_color", TEXT_COLOR)
 				node.add_theme_color_override("icon_hover_color", Color.WHITE)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"tab":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -182,6 +186,8 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_color", TEXT_COLOR)
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"tab_active":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -193,6 +199,8 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_color", Color.WHITE)
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"sticked":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -204,6 +212,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 14)
 		"accent":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -214,6 +223,8 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_color", Color.WHITE)
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"layer":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -224,6 +235,8 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_color", TEXT_COLOR)
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"layer_active":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -234,17 +247,25 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_color", Color.WHITE)
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"field":
 			if node is LineEdit:
 				node.add_theme_stylebox_override("normal", flat(Color(1, 1, 1, 0.65)))
 				node.add_theme_stylebox_override("focus", flat(Color(1, 1, 1, 0.85)))
 				node.add_theme_stylebox_override("read_only", flat(bg_disabled))
+				node.add_theme_color_override("font_color", TEXT_COLOR)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 			elif node is SpinBox:
 				node.add_theme_stylebox_override("up_background", flat(Color.TRANSPARENT))
 				node.add_theme_stylebox_override("down_background", flat(Color.TRANSPARENT))
 				var line: LineEdit = (node as SpinBox).get_line_edit()
 				line.add_theme_stylebox_override("normal", flat(Color(1, 1, 1, 0.65)))
 				line.add_theme_stylebox_override("focus", flat(Color(1, 1, 1, 0.85)))
+				line.add_theme_color_override("font_color", TEXT_COLOR)
+				line.add_theme_font_override("font", FmgUiTheme.mono())
+				line.add_theme_font_size_override("font_size", 12)
 		"select":
 			if node is OptionButton:
 				node.add_theme_stylebox_override("normal", flat(Color(1, 1, 1, 0.65)))
@@ -255,6 +276,8 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", TEXT_COLOR)
 				node.add_theme_color_override("font_pressed_color", TEXT_COLOR)
 				node.add_theme_color_override("icon_normal_color", TEXT_COLOR)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"check":
 			if node is BaseButton:
 				node.add_theme_color_override("font_color", TEXT_COLOR)
@@ -263,6 +286,8 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("icon_normal_color", TEXT_COLOR)
 				node.add_theme_color_override("icon_hover_color", TEXT_COLOR)
 				node.add_theme_color_override("icon_pressed_color", TEXT_COLOR)
+				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"slider":
 			if node is Slider:
 				node.add_theme_stylebox_override("slider", flat(light_solid, dark_solid, 1, 2))
@@ -276,14 +301,17 @@ func _style_control(node: Control, kind: String) -> void:
 			if node is Label:
 				node.add_theme_color_override("font_color", TEXT_COLOR)
 				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"tip":
 			if node is Label:
 				node.add_theme_color_override("font_color", TIP_COLOR)
 				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 11)
 		"sep":
 			if node is Label:
 				node.add_theme_color_override("font_color", dark_solid)
 				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
 		"scroll":
 			if node is ScrollContainer:
 				node.add_theme_stylebox_override("panel", flat(Color.TRANSPARENT))
@@ -291,3 +319,4 @@ func _style_control(node: Control, kind: String) -> void:
 			if node is Label:
 				node.add_theme_color_override("font_color", dark_solid)
 				node.add_theme_font_override("font", FmgUiTheme.mono())
+				node.add_theme_font_size_override("font_size", 12)
