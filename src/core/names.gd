@@ -24,6 +24,23 @@ static func capitalize(s: String) -> String:
 	return s[0].to_upper() + s.substr(1)
 
 
+## Safe last character of a string ("" when the string is empty). GDScript
+## aborts on `s[-1]`, while the original JS returned `undefined`, so every
+## "last char" check must go through this helper.
+static func last_char(s: String) -> String:
+	if s.is_empty():
+		return ""
+	return s[s.length() - 1]
+
+
+## Safe character at `index`, counting from the end for negative indices.
+static func char_at(s: String, index: int) -> String:
+	var i: int = index if index >= 0 else s.length() + index
+	if i < 0 or i >= s.length():
+		return ""
+	return s[i]
+
+
 ## Build the Markov chain: key is a letter (or "" for word start), value is
 ## an array of possible next syllables
 func calculate_chain(names_list: String) -> Dictionary:
@@ -32,6 +49,10 @@ func calculate_chain(names_list: String) -> Dictionary:
 
 	for n: String in available_names:
 		var name_v := n.strip_edges().to_lower()
+		if name_v.is_empty():
+			# An empty entry (trailing/duplicated comma) would push an empty
+			# start syllable into the chain and let get_base() build "".
+			continue
 		var basic: bool = not name_v.contains("ё") # treat as basic-ASCII pipeline
 		for ch: String in name_v:
 			if ch.unicode_at(0) > 127:
@@ -113,6 +134,9 @@ func get_base(base: int, min_len: int = 0, max_len: int = 0, dupl: String = "~")
 		dupl = name_bases[base]["d"]
 
 	var v: Array = data[""]
+	if v.is_empty():
+		push_warning("Namebase %d has an empty start chain" % base)
+		return _random_source_name(base)
 	var cur: String = v[Sim.rng.rand(v.size() - 1)]
 	var w := ""
 	for i: int in 20:
@@ -130,16 +154,26 @@ func get_base(base: int, min_len: int = 0, max_len: int = 0, dupl: String = "~")
 					w += cur
 				break
 			else:
-				var last_char: String = cur[cur.length() - 1]
-				v = data.get(last_char, data[""])
+				v = data.get(last_char(cur), data[""])
+				if v.is_empty():
+					v = data[""]
 
 		w += cur
+		if v.is_empty():
+			break
 		cur = v[Sim.rng.rand(v.size() - 1)]
 
+	# The chain can fail to produce anything (e.g. every start syllable is
+	# longer than max_len): fall back to a raw name from the base.
+	if w.is_empty():
+		return _random_source_name(base)
+
 	# parse word to get a final name
-	var l: String = w[w.length() - 1]
+	var l: String = last_char(w)
 	if l == "'" or l == " " or l == "-":
 		w = w.substr(0, w.length() - 1)
+	if w.is_empty():
+		return _random_source_name(base)
 
 	var name_v := ""
 	var chars := []
@@ -153,12 +187,10 @@ func get_base(base: int, min_len: int = 0, max_len: int = 0, dupl: String = "~")
 		if name_v.is_empty():
 			name_v = c.to_upper()
 			continue
-		if name_v[name_v.length() - 1] == "-" and c == " ":
+		var prev_c: String = last_char(name_v)
+		if prev_c == "-" and c == " ":
 			continue
-		if name_v[name_v.length() - 1] == " ":
-			name_v += c.to_upper()
-			continue
-		if name_v[name_v.length() - 1] == "-":
+		if prev_c == " " or prev_c == "-":
 			name_v += c.to_upper()
 			continue
 		if c == "a" and next_c == "e":
@@ -181,10 +213,20 @@ func get_base(base: int, min_len: int = 0, max_len: int = 0, dupl: String = "~")
 		name_v = joined
 
 	if name_v.length() < 2:
-		var all_names: PackedStringArray = name_bases[base]["b"].split(",")
-		name_v = all_names[Sim.rng.rand(all_names.size() - 1)]
+		name_v = _random_source_name(base)
 
 	return name_v
+
+
+## Pick a raw, unprocessed name from the base's source list. Used whenever the
+## Markov chain cannot produce a usable word.
+func _random_source_name(base: int) -> String:
+	if base < 0 or base >= name_bases.size():
+		return "Nameless"
+	var all_names: PackedStringArray = str(name_bases[base]["b"]).split(",", false)
+	if all_names.is_empty():
+		return "Nameless"
+	return all_names[Sim.rng.rand(all_names.size() - 1)].strip_edges()
 
 
 func get_culture(culture: int, min_len: int = 0, max_len: int = 0, dupl: String = "~") -> String:
@@ -207,14 +249,19 @@ func get_culture_short(culture: int) -> String:
 
 
 func _validate_suffix(name_v: String, suffix: String) -> String:
+	if suffix.is_empty():
+		return name_v
 	if name_v.length() >= suffix.length() and name_v.substr(name_v.length() - suffix.length()) == suffix:
 		return name_v
 	var s1: String = suffix[0]
-	if name_v[name_v.length() - 1] == s1:
+	if last_char(name_v) == s1:
 		name_v = name_v.substr(0, name_v.length() - 1)
-	if is_vowel(s1) == is_vowel(name_v[name_v.length() - 1]) and is_vowel(s1) == is_vowel(name_v[name_v.length() - 2]):
+	var l1: String = char_at(name_v, -1)
+	var l2: String = char_at(name_v, -2)
+	if not l1.is_empty() and not l2.is_empty() \
+			and is_vowel(s1) == is_vowel(l1) and is_vowel(s1) == is_vowel(l2):
 		name_v = name_v.substr(0, name_v.length() - 1)
-	if name_v[name_v.length() - 1] == s1:
+	if last_char(name_v) == s1:
 		name_v = name_v.substr(0, name_v.length() - 1)
 	return name_v + suffix
 
@@ -230,6 +277,10 @@ func _add_suffix(name_v: String) -> String:
 
 ## Generate a state name based on capital or random name and culture-specific suffix
 func get_state(name_v: String, culture: int, base: int = -1) -> String:
+	if name_v.is_empty():
+		name_v = get_culture_short(culture)
+	if name_v.is_empty():
+		return "Nameless"
 	if base < 0 and Sim.pack and culture >= 0 and culture < Sim.pack.cultures.size():
 		base = Sim.pack.cultures[culture]["base"]
 	elif base < 0:
@@ -245,15 +296,15 @@ func get_state(name_v: String, culture: int, base: int = -1) -> String:
 	if base == 5 and (name_v.ends_with("sk") or name_v.ends_with("ev") or name_v.ends_with("ov")):
 		name_v = name_v.substr(0, name_v.length() - 2)
 	elif base == 12:
-		return name_v if is_vowel(name_v[name_v.length() - 1]) else name_v + "u"
+		return name_v if is_vowel(last_char(name_v)) else name_v + "u"
 	elif base == 18 and Sim.rng.P(0.4):
-		name_v = ("Al" + name_v.to_lower()) if is_vowel(name_v[0].to_lower()) else ("Al " + name_v)
+		name_v = ("Al" + name_v.to_lower()) if is_vowel(char_at(name_v, 0).to_lower()) else ("Al " + name_v)
 
 	if base > 32 and base < 42:
 		return name_v
 
-	if name_v.length() > 3 and is_vowel(name_v[name_v.length() - 1]):
-		if is_vowel(name_v[name_v.length() - 2]) and Sim.rng.P(0.85):
+	if name_v.length() > 3 and is_vowel(last_char(name_v)):
+		if is_vowel(char_at(name_v, -2)) and Sim.rng.P(0.85):
 			name_v = name_v.substr(0, name_v.length() - 2)
 		elif Sim.rng.P(0.7):
 			name_v = name_v.substr(0, name_v.length() - 1)
@@ -301,10 +352,14 @@ func get_map_name() -> String:
 ## Abbreviation for a culture name, avoiding duplicates (languageUtils.abbreviate)
 static func abbreviate(name_v: String, restricted: Array = []) -> String:
 	var parsed: String = name_v.replace("Old ", "O ").replace("(", "").replace(")", "")
-	var words := parsed.split(" ")
+	var words := parsed.split(" ", false)
 	var letters := "".join(words)
+	if letters.is_empty():
+		return "??"
 
-	var code: String = (words[0][0] + words[1][0]) if words.size() == 2 else letters.substr(0, 2)
+	var code: String = letters.substr(0, 2)
+	if words.size() == 2 and not words[0].is_empty() and not words[1].is_empty():
+		code = words[0][0] + words[1][0]
 	var i: int = 1
 	while i < letters.length() - 1 and restricted.has(code):
 		code = letters[0] + letters[i].to_upper()
