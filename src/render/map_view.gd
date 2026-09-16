@@ -437,7 +437,9 @@ func _build_overlay_meshes() -> void:
 
 func _draw_mesh(mesh: ArrayMesh) -> void:
 	if mesh != null:
-		draw_mesh(mesh, Transform2D.IDENTITY, Color.WHITE)
+		# Godot 4.7 signature: draw_mesh(mesh, texture, transform, modulate).
+		# Vertex colors are baked into the mesh, so no texture and identity/white defaults apply.
+		draw_mesh(mesh, null)
 
 
 func queue_redraw_all() -> void:

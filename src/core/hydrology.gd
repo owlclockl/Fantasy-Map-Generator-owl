@@ -312,7 +312,11 @@ func generate(allow_erosion: bool = true) -> void:
 	var add_cell_to_river := func(cell_id: int, river_id: int) -> void:
 		if not rivers_data.has(river_id):
 			rivers_data[river_id] = PackedInt32Array()
-		(rivers_data[river_id] as PackedInt32Array).append(cell_id)
+		# Packed arrays copied through an inline `as` cast: append to a local
+		# and write the value back, otherwise the append is silently lost.
+		var river_cells: PackedInt32Array = rivers_data[river_id]
+		river_cells.append(cell_id)
+		rivers_data[river_id] = river_cells
 
 	var flow_down := func(to_cell: int, from_flux: float, river_id: int) -> void:
 		var to_flux: float = cells.fl[to_cell] - float(cells.conf[to_cell])
