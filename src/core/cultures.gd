@@ -2,8 +2,11 @@ class_name FmgCultures
 extends RefCounted
 ## Cultures: placement of culture centers by suitability sorters, then
 ## cost-based Dijkstra expansion. Port of cultures-generator.ts.
-## Sort formulas are evaluated with the Expression class; the helper methods
-## n/td/bd/sf/t_/h_/s_ live at the bottom of this file.
+## Sort formulas are evaluated by the built-in SortExpr mini-evaluator (see the
+## bottom of this file) — deliberately NOT the engine's Expression class, which
+## resolves bare identifiers against the base object and fails with
+## "Invalid named index 'i' for base type Object" depending on how input names
+## are bound. The helper methods n/td/tds/bd/sf/t_/h_/s_ live at the bottom.
 
 const SEA_LEVEL: int = 20
 
@@ -12,17 +15,13 @@ const CULTURE_SETS := {
 	"european": {"name": "European", "max": 15, "probability": 10, "nameRu": "Европейский"},
 	"oriental": {"name": "Oriental", "max": 13, "probability": 2, "nameRu": "Восточный"},
 	"english": {"name": "English", "max": 10, "probability": 5, "nameRu": "Английский"},
-	"antique": {"name": "Antique", "max": 16, "probability": 3, "nameRu": "Античный"},
+	"antique": {"name": "Antique", "max": 10, "probability": 3, "nameRu": "Античный"},
 	"highFantasy": {"name": "High Fantasy", "max": 17, "probability": 11, "nameRu": "Высокое фэнтези"},
-	"darkFantasy": {"name": "Dark Fantasy", "max": 18, "probability": 3, "nameRu": "Тёмное фэнтези"}
+	"darkFantasy": {"name": "Dark Fantasy", "max": 18, "probability": 3, "nameRu": "Тёмное фэнтези"},
+	"random": {"name": "Random", "max": 100, "probability": 1, "nameRu": "Случайный"}
 }
 
 const CULTURE_TYPES: Array = ["Generic", "Hunting", "Highland", "River", "Lake", "Naval", "Nomadic"]
-
-## input names bound when parsing the sort formulas below; "i" is the cell id.
-## Declared as a typed const so the array literal is folded at compile time
-## (PackedStringArray(...) is not a constant expression in GDScript).
-const EXPR_INPUTS: PackedStringArray = ["i"]
 
 ## rows: [name, nameBase, odd, sortExpression, shield]
 const SET_WORLD := [
@@ -292,32 +291,31 @@ func _select_cultures(cultures_number: int) -> Array:
 	if all_odd:
 		return default_cultures.slice(0, cultures_number)
 
+	# original selectCultures semantics: one shared budget of 200 odd-rolls for
+	# the whole selection; once the budget is spent, whatever is drawn is kept
 	var pool := Array(default_cultures)
-	var attempts: int = 0
-	while cultures.size() < cultures_number and not pool.is_empty() and attempts < 200:
-		attempts += 1
+	var rolls: int = 0
+	while cultures.size() < cultures_number and not pool.is_empty():
 		var rnd: int = rng.rand(pool.size() - 1)
 		var culture: Dictionary = pool[rnd]
-		if rng.P(culture["odd"]):
-			cultures.append(culture)
-			pool.remove_at(rnd)
+		rolls += 1
+		if rolls < 200 and not rng.P(culture["odd"]):
+			continue
+		cultures.append(culture)
+		pool.remove_at(rnd)
 	return cultures
 
 
 func _place_center(sort_expr: String, populated: PackedInt32Array, culture_ids: PackedInt32Array, centers: PackedVector2Array, count: int) -> int:
 	var spacing: float = (pack.width + pack.height) / 2.0 / float(count)
-	var sorted := Array(populated)
-	var expr := Expression.new()
-	# "i" must be declared as an input name, otherwise the parser treats the
-	# bare identifier as a named index into the base instance (self) and every
-	# execute() fails with "Invalid named index 'i' for base type Object".
-	var parsed: bool = expr.parse(sort_expr, EXPR_INPUTS) == OK
-	if not parsed:
-		push_warning("Cannot parse culture sort expression '%s': %s" % [sort_expr, expr.get_error_text()])
+	var expr := SortExpr.new(self, sort_expr)
+	if not expr.ok:
+		push_warning("Cannot parse culture sort expression '%s': %s. Using population score instead." % [sort_expr, expr.error])
 
 	var sort_values := {}
 	for cell_id: int in populated:
-		sort_values[cell_id] = _eval_sort(expr, cell_id) if parsed else float(pack.s[cell_id])
+		sort_values[cell_id] = expr.eval_cell(cell_id) if expr.ok else float(pack.s[cell_id])
+	var sorted := Array(populated)
 	sorted.sort_custom(func(a: int, b: int) -> bool:
 		return float(sort_values.get(a, -INF)) > float(sort_values.get(b, -INF)))
 
@@ -473,18 +471,7 @@ func _get_type_cost(t: int, type: String) -> float:
 	return 0.0
 
 
-# --- Expression helpers (bound as methods on self during evaluation) ---
-
-func _eval_sort(expr: Expression, cell_id: int) -> float:
-	# show_error = false: this runs once per populated cell, so a bad formula
-	# would otherwise flood the console with one engine error per cell.
-	var out: Variant = expr.execute([cell_id], self, false)
-	if expr.has_execute_failed() or not (out is float or out is int):
-		return -INF
-	var value: float = float(out)
-	# NaN would make the comparator inconsistent and break sort_custom
-	return -INF if is_nan(value) else value
-
+# --- Sort-formula helpers (called by SortExpr below) ---
 
 func n(cell_id: int) -> float:
 	return ceil(float(pack.s[cell_id]) / _s_max * 3.0)
@@ -499,10 +486,13 @@ func tds(cell_id: int, goal: float) -> float:
 	return sqrt(td(cell_id, goal))
 
 
-func bd(cell_id: int, b1: int, b2: int = -1, b3: int = -1, b4: int = -1, fee: float = 4.0) -> float:
+## biome difference fee; `biomes` may hold any number of biome ids (the
+## original JS is bd(cell, biomes[], fee) — some formulas list five biomes)
+func bd(cell_id: int, biomes: Array, fee: float = 4.0) -> float:
 	var biome: int = pack.biome[cell_id]
-	if biome == b1 or biome == b2 or biome == b3 or biome == b4:
-		return 1.0
+	for b: int in biomes:
+		if b >= 0 and biome == b:
+			return 1.0
 	return fee
 
 
@@ -526,3 +516,258 @@ func h_(cell_id: int) -> float:
 
 func s_(cell_id: int) -> float:
 	return float(pack.s[cell_id])
+
+
+## A parsed culture sort formula, evaluated per cell in pure GDScript.
+## Exists because the engine's Expression class resolves bare identifiers
+## (like `i`) as named indexes into the base object and dies with
+## "Invalid named index 'i' for base type Object" unless input names happen
+## to be bound exactly right — this evaluator has no such state.
+## Grammar: expr := term (('+'|'-') term)* ; term := unary (('*'|'/') unary)* ;
+##          unary := '-' unary | atom ; atom := number | fn '(' args ')' | '(' expr ')'
+## AST nodes: ["num", v] | ["fn", name, args] | ["bin", op, l, r] | ["neg", node]
+class SortExpr:
+	extends RefCounted
+
+	var ok: bool = false
+	var error: String = ""
+	var ast: Array = []
+	var _host: FmgCultures = null
+	var _tokens: Array = []
+	var _pos: int = 0
+
+
+	func _init(host: FmgCultures, source: String) -> void:
+		_host = host
+		_tokens = _tokenize(source)
+		if error != "":
+			return
+		if _tokens.is_empty():
+			error = "empty expression"
+			return
+		ast = _parse_expr()
+		if error == "" and _pos < _tokens.size():
+			error = "unexpected token '%s'" % str(_tokens[_pos][1])
+		ok = error == ""
+
+
+	func eval_cell(cell_id: int) -> float:
+		if not ok:
+			return -INF
+		var v: float = _eval(ast, cell_id)
+		# NaN/INF would make the sort comparator inconsistent
+		return -INF if is_nan(v) else v
+
+
+	# --- tokenizer ---
+
+	static func _is_digit(ch: String) -> bool:
+		return ch >= "0" and ch <= "9"
+
+
+	static func _is_ident_start(ch: String) -> bool:
+		return (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z") or ch == "_"
+
+
+	static func _is_ident_char(ch: String) -> bool:
+		return _is_ident_start(ch) or _is_digit(ch)
+
+
+	func _tokenize(src: String) -> Array:
+		var out: Array = []
+		var i: int = 0
+		var len: int = src.length()
+		while i < len:
+			var ch: String = src[i]
+			if ch == " " or ch == "\t" or ch == "\n":
+				i += 1
+				continue
+			if _is_digit(ch) or ch == ".":
+				var j: int = i
+				while j < len and (_is_digit(src[j]) or src[j] == "."):
+					j += 1
+				var text: String = src.substr(i, j - i)
+				if not text.is_valid_float():
+					error = "bad number '%s'" % text
+					return out
+				out.append(["num", text.to_float()])
+				i = j
+				continue
+			if _is_ident_start(ch):
+				var j2: int = i
+				while j2 < len and _is_ident_char(src[j2]):
+					j2 += 1
+				out.append(["id", src.substr(i, j2 - i)])
+				i = j2
+				continue
+			if ch == "+" or ch == "-" or ch == "*" or ch == "/" or ch == "(" or ch == ")" or ch == ",":
+				out.append(["sym", ch])
+				i += 1
+				continue
+			error = "unexpected character '%s'" % ch
+			return out
+		return out
+
+
+	# --- recursive descent parser ---
+
+	func _peek() -> Array:
+		if _pos < _tokens.size():
+			return _tokens[_pos]
+		return ["eof", ""]
+
+
+	func _take() -> Array:
+		var t: Array = _peek()
+		_pos += 1
+		return t
+
+
+	func _parse_expr() -> Array:
+		var node: Array = _parse_term()
+		while error == "":
+			var t: Array = _peek()
+			if t[0] == "sym" and (t[1] == "+" or t[1] == "-"):
+				_take()
+				node = ["bin", t[1], node, _parse_term()]
+			else:
+				break
+		return node
+
+
+	func _parse_term() -> Array:
+		var node: Array = _parse_unary()
+		while error == "":
+			var t: Array = _peek()
+			if t[0] == "sym" and (t[1] == "*" or t[1] == "/"):
+				_take()
+				node = ["bin", t[1], node, _parse_unary()]
+			else:
+				break
+		return node
+
+
+	func _parse_unary() -> Array:
+		var t: Array = _peek()
+		if t[0] == "sym" and t[1] == "-":
+			_take()
+			return ["neg", _parse_unary()]
+		if t[0] == "sym" and t[1] == "+":
+			_take()
+			return _parse_unary()
+		return _parse_atom()
+
+
+	func _parse_atom() -> Array:
+		var t: Array = _take()
+		if t[0] == "num":
+			return ["num", t[1]]
+		if t[0] == "sym" and t[1] == "(":
+			var node: Array = _parse_expr()
+			var closing: Array = _take()
+			if error == "" and not (closing[0] == "sym" and closing[1] == ")"):
+				error = "expected ')'"
+			return node
+		if t[0] == "id":
+			var name: String = t[1]
+			if name == "i":
+				# bare `i`: the current cell id (normally wrapped in a function)
+				return ["fn", "i", []]
+			var opening: Array = _take()
+			if not (opening[0] == "sym" and opening[1] == "("):
+				error = "expected '(' after '%s'" % name
+				return []
+			var args: Array = []
+			var next_t: Array = _peek()
+			if next_t[0] == "sym" and next_t[1] == ")":
+				_take()
+			else:
+				while error == "":
+					args.append(_parse_expr())
+					if error != "":
+						break
+					var sep: Array = _take()
+					if sep[0] == "sym" and sep[1] == ",":
+						continue
+					if sep[0] == "sym" and sep[1] == ")":
+						break
+					error = "expected ',' or ')'"
+			if error != "":
+				return []
+			match name:
+				"n", "td", "tds", "bd", "sf", "t_", "h_", "s_":
+					return ["fn", name, args]
+			error = "unknown function '%s'" % name
+			return []
+		if t[0] == "eof":
+			error = "unexpected end of expression"
+		else:
+			error = "unexpected token '%s'" % str(t[1])
+		return []
+
+
+	# --- evaluation ---
+
+	func _eval(node: Array, cell_id: int) -> float:
+		match node[0]:
+			"num":
+				return float(node[1])
+			"neg":
+				return -_eval(node[1], cell_id)
+			"bin":
+				var l: float = _eval(node[2], cell_id)
+				var r: float = _eval(node[3], cell_id)
+				match node[1]:
+					"+": return l + r
+					"-": return l - r
+					"*": return l * r
+					_:
+						if r == 0.0:
+							return INF # JS semantics: division by zero never traps
+						return l / r
+			"fn":
+				return _eval_fn(node[1], node[2], cell_id)
+		return 0.0
+
+
+	func _eval_fn(fn_name: String, arg_nodes: Array, cell_id: int) -> float:
+		var args: Array = []
+		for a: Array in arg_nodes:
+			args.append(_eval(a, cell_id))
+		match fn_name:
+			"i":
+				return float(cell_id)
+			"n":
+				return _host.n(cell_id)
+			"td":
+				if args.size() >= 2:
+					return _host.td(cell_id, args[1])
+				error = "td() needs 2 arguments"
+			"tds":
+				if args.size() >= 2:
+					return _host.tds(cell_id, args[1])
+				error = "tds() needs 2 arguments"
+			"bd":
+				# flat args encode `bd(i, b1..bN[, -1 padding, fee])`: when a -1
+				# pad is present the trailing value is the fee, otherwise every
+				# argument is a biome and the fee defaults to 4
+				var biomes: Array = []
+				var fee: float = 4.0
+				var padded: bool = false
+				for a: float in args:
+					if int(a) == -1:
+						padded = true
+						break
+					biomes.append(int(a))
+				if padded and args.size() >= 2:
+					fee = args[args.size() - 1]
+				return _host.bd(cell_id, biomes, fee)
+			"sf":
+				return _host.sf(cell_id, args[0] if args.size() >= 1 else 4.0)
+			"t_":
+				return _host.t_(cell_id)
+			"h_":
+				return _host.h_(cell_id)
+			"s_":
+				return _host.s_(cell_id)
+		return 0.0

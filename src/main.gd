@@ -14,6 +14,7 @@ var seed_edit: LineEdit = null
 var template_option: OptionButton = null
 var density_option: OptionButton = null
 var cultures_spin: SpinBox = null
+var cultures_set_option: OptionButton = null
 var states_spin: SpinBox = null
 var burgs_check: CheckButton = null
 var generate_button: Button = null
@@ -87,6 +88,7 @@ func _on_generate_pressed() -> void:
 	sim.template_id = _current_template_id()
 	sim.cells_desired = POINTS_BY_DENSITY[density_option.get_selected_id()]
 	sim.cultures_limit = int(cultures_spin.value)
+	sim.cultures_set = str(cultures_set_option.get_selected_metadata()) if cultures_set_option != null else sim.cultures_set
 	sim.states_limit = int(states_spin.value)
 	sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
 	sim.poles_cache = {}
@@ -281,6 +283,16 @@ func _export_png(path: String) -> void:
 	clone.show_borders = view.show_borders
 	clone.show_burgs = view.show_burgs
 	clone.show_relief = view.show_relief
+	clone.show_ice = view.show_ice
+	clone.show_routes = view.show_routes
+	clone.show_feature_labels = view.show_feature_labels
+	clone.show_province_labels = view.show_province_labels
+	clone.show_markers = view.show_markers
+	clone.show_armies = view.show_armies
+	clone.show_zones = view.show_zones
+	clone.show_goods = view.show_goods
+	clone.show_emblems = view.show_emblems
+	clone.show_relief_icons = view.show_relief_icons
 	clone.rebuild_cache()
 	clone.scale = Vector2(scale_factor, scale_factor)
 	sv.add_child(clone)
@@ -290,6 +302,156 @@ func _export_png(path: String) -> void:
 	img.save_png(path)
 	status_label.text = "Экспортировано: %s" % path
 	sv.queue_free()
+
+
+func _export_dialog(kind: String, description: String) -> void:
+	var dialog := FileDialog.new()
+	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.current_file = "map_%s.%s" % [sim.seed_value, kind]
+	dialog.filters = PackedStringArray(["*.%s ; %s" % [kind, description]])
+	add_child(dialog)
+	dialog.file_selected.connect(func(path: String) -> void:
+		if kind == "svg":
+			_export_svg(path)
+		else:
+			_export_csv(path)
+		dialog.queue_free()
+	)
+	dialog.popup_centered(Vector2i(700, 500))
+
+
+## SVG export: ocean background, land and lake polygons, rivers, borders,
+## routes, burgs and labels — the same geometry the map view draws.
+func _export_svg(path: String) -> void:
+	var pack: FmgGraph = sim.pack
+	if pack == null:
+		status_label.text = "Нет данных для экспорта"
+		return
+	var svg: Array = []
+	svg.append('<?xml version="1.0" encoding="UTF-8"?>')
+	svg.append('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">' % [
+		int(sim.map_width), int(sim.map_height), int(sim.map_width), int(sim.map_height)
+	])
+	svg.append('<rect width="100%%" height="100%%" fill="%s"/>' % "#466eab")
+
+	# landmasses and lakes from the cached rings
+	view.rebuild_cache()
+	for ring: Dictionary in view._land_rings:
+		svg.append('<path d="%s" fill="%s" stroke="#33506d" stroke-width="1"/>' % [_path_d(ring["points"]), "#e6e2c8"])
+	for ring: Dictionary in view._lake_rings:
+		svg.append('<path d="%s" fill="%s" stroke="#33506d" stroke-width="0.7"/>' % [_path_d(ring["points"]), "#5b83b8"])
+
+	# rivers
+	for entry: Dictionary in view._river_polys:
+		svg.append('<path d="%s Z" fill="%s"/>' % [_path_d(entry["points"]), "#5d99c6"])
+
+	# borders
+	svg.append(_svg_borders(pack))
+
+	# routes
+	for route: Variant in pack.routes:
+		var r: Dictionary = route
+		var points: PackedVector2Array = r.get("points", PackedVector2Array())
+		if points.size() < 2:
+			continue
+		var stroke: String = "#7a5c3e" if r.get("group", "") == "roads" else "#4a7ab5"
+		var dash: String = ' stroke-dasharray="3 2"' if r.get("group", "") != "roads" else ""
+		svg.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="0.8"%s/>' % [_poly_pts(points), stroke, dash])
+
+	# burgs
+	for b in pack.burgs:
+		if b == null:
+			continue
+		var radius: float = 2.2 if int(b.get("capital", 0)) == 1 else 1.4
+		var fill: String = "#7a1f1f" if int(b.get("capital", 0)) == 1 else "#3d2b1f"
+		svg.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="%s"/>' % [float(b["x"]), float(b["y"]), radius, fill])
+
+	# state labels
+	for state in pack.states:
+		if state == null or int(state["i"]) == 0 or not sim.poles_cache.has(state["i"]):
+			continue
+		var pole: Vector2 = sim.poles_cache[state["i"]]
+		svg.append('<text x="%.1f" y="%.1f" text-anchor="middle" font-size="14" fill="#1e2124" opacity="0.85">%s</text>' % [
+			pole.x, pole.y, _xml_escape(state.get("fullName", state["name"]))
+		])
+	svg.append('</svg>')
+
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		status_label.text = "Ошибка записи: %s" % error_string(FileAccess.get_open_error())
+		return
+	f.store_string("\n".join(svg))
+	f.close()
+	status_label.text = "Экспортировано: %s" % path
+
+
+func _path_d(points: PackedVector2Array) -> String:
+	if points.is_empty():
+		return ""
+	var parts: Array = ["M%.1f %.1f" % [points[0].x, points[0].y]]
+	for i: int in range(1, points.size()):
+		parts.append("L%.1f %.1f" % [points[i].x, points[i].y])
+	parts.append("Z")
+	return " ".join(parts)
+
+
+func _poly_pts(points: PackedVector2Array) -> String:
+	var parts: Array = []
+	for p: Vector2 in points:
+		parts.append("%.1f,%.1f" % [p.x, p.y])
+	return " ".join(parts)
+
+
+func _svg_borders(pack: FmgGraph) -> String:
+	var segments: Array = []
+	var vertices := pack.voronoi.vertices
+	for i: int in pack.cell_count():
+		if pack.h[i] < 20:
+			continue
+		for n: int in pack.c[i]:
+			if n < i or pack.h[n] < 20:
+				continue
+			if pack.state[i] == pack.state[n]:
+				continue
+			var common := PackedInt32Array()
+			for v1: int in pack.v[i]:
+				for v2: int in pack.v[n]:
+					if v1 == v2:
+						common.append(v1)
+			if common.size() >= 2:
+				segments.append("M%.1f %.1f L%.1f %.1f" % [
+					vertices.p[common[0]].x, vertices.p[common[0]].y,
+					vertices.p[common[1]].x, vertices.p[common[1]].y
+				])
+	if segments.is_empty():
+		return ""
+	return '<path d="%s" stroke="#1a334d" stroke-width="1" stroke-opacity="0.65" fill="none"/>' % " ".join(segments)
+
+
+func _xml_escape(s: String) -> String:
+	return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+
+## CSV export: one row per cell with the main attributes.
+func _export_csv(path: String) -> void:
+	var pack: FmgGraph = sim.pack
+	if pack == null:
+		status_label.text = "Нет данных для экспорта"
+		return
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		status_label.text = "Ошибка записи: %s" % error_string(FileAccess.get_open_error())
+		return
+	f.store_line("id;x;y;height;biome;culture;state;province;religion;population;good;market;river;flux")
+	for i: int in pack.cell_count():
+		f.store_line("%d;%.1f;%.1f;%d;%d;%d;%d;%d;%.2f;%d;%d;%d;%.1f" % [
+			i, pack.points[i].x, pack.points[i].y, pack.h[i], pack.biome[i],
+			pack.culture[i], pack.state[i], pack.province[i], pack.religion[i],
+			pack.pop[i], pack.good[i], pack.market[i], pack.r[i], pack.fl[i]
+		])
+	f.close()
+	status_label.text = "Экспортировано: %s" % path
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +516,17 @@ func _build_ui() -> void:
 	cultures_spin.value = sim.cultures_limit
 	vbox.add_child(_make_row("Культур", cultures_spin))
 
+	cultures_set_option = OptionButton.new()
+	var set_index: int = 0
+	for set_id: String in FmgCultures.CULTURE_SETS:
+		var set_meta: Dictionary = FmgCultures.CULTURE_SETS[set_id]
+		cultures_set_option.add_item(str(set_meta["nameRu"]), set_index)
+		cultures_set_option.set_item_metadata(set_index, set_id)
+		if set_id == sim.cultures_set:
+			cultures_set_option.select(set_index)
+		set_index += 1
+	vbox.add_child(_make_row("Набор культур", cultures_set_option))
+
 	states_spin = SpinBox.new()
 	states_spin.min_value = 1
 	states_spin.max_value = 60
@@ -384,6 +557,16 @@ func _build_ui() -> void:
 	_add_layer_check(vbox, "Границы", "borders", view.show_borders)
 	_add_layer_check(vbox, "Города", "burgs", view.show_burgs)
 	_add_layer_check(vbox, "Подписи", "labels", view.show_labels)
+	_add_layer_check(vbox, "Лёд", "ice", view.show_ice)
+	_add_layer_check(vbox, "Дороги", "routes", view.show_routes)
+	_add_layer_check(vbox, "Подписи рельефа", "feature_labels", view.show_feature_labels)
+	_add_layer_check(vbox, "Подписи провинций", "province_labels", view.show_province_labels)
+	_add_layer_check(vbox, "Маркеры", "markers", view.show_markers)
+	_add_layer_check(vbox, "Армии", "armies", view.show_armies)
+	_add_layer_check(vbox, "Зоны", "zones", view.show_zones)
+	_add_layer_check(vbox, "Ресурсы", "goods", view.show_goods)
+	_add_layer_check(vbox, "Гербы", "emblems", view.show_emblems)
+	_add_layer_check(vbox, "Иконки рельефа", "relief_icons", view.show_relief_icons)
 
 	# --- tools section ---
 	vbox.add_child(_make_header("Инструменты"))
@@ -416,10 +599,21 @@ func _build_ui() -> void:
 	var png_btn := Button.new()
 	png_btn.text = "PNG"
 	png_btn.pressed.connect(_on_export_pressed)
+	var svg_btn := Button.new()
+	svg_btn.text = "SVG"
+	svg_btn.pressed.connect(func() -> void: _export_dialog("svg", "SVG векторная карта"))
+	var csv_btn := Button.new()
+	csv_btn.text = "CSV"
+	csv_btn.pressed.connect(func() -> void: _export_dialog("csv", "CSV данные клеток"))
 	io_row.add_child(save_btn)
 	io_row.add_child(load_btn)
 	io_row.add_child(png_btn)
 	vbox.add_child(io_row)
+	var io_row2 := HBoxContainer.new()
+	io_row2.add_theme_constant_override("separation", 4)
+	io_row2.add_child(svg_btn)
+	io_row2.add_child(csv_btn)
+	vbox.add_child(io_row2)
 
 	var hint := Label.new()
 	hint.text = "Колесо — зум, ПКМ/пробел+ЛКМ — панорама."
@@ -488,5 +682,15 @@ func _add_layer_check(parent: Control, text: String, key: String, initial: bool)
 			"borders": view.show_borders = pressed
 			"burgs": view.show_burgs = pressed
 			"labels": view.show_labels = pressed
+			"ice": view.show_ice = pressed
+			"routes": view.show_routes = pressed
+			"feature_labels": view.show_feature_labels = pressed
+			"province_labels": view.show_province_labels = pressed
+			"markers": view.show_markers = pressed
+			"armies": view.show_armies = pressed
+			"zones": view.show_zones = pressed
+			"goods": view.show_goods = pressed
+			"emblems": view.show_emblems = pressed
+			"relief_icons": view.show_relief_icons = pressed
 		view.queue_redraw()
 	)

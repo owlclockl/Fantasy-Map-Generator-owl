@@ -52,8 +52,10 @@ var grid: FmgGraph = null
 var pack: FmgGraph = null
 var hydrology: FmgHydrology = null
 var burgs: FmgBurgs = null
+var routes_gen: FmgRoutes = null # kept for markers/zones helpers and journeys
 var generation_time_ms: int = 0
 var poles_cache: Dictionary = {} # state id -> pole cell position, cached for label rendering
+var province_poles_cache: Dictionary = {} # province id -> pole position, for province labels
 
 
 func climate() -> FmgClimate:
@@ -82,13 +84,25 @@ func pipeline() -> Array:
 		["Упаковка графа", func() -> void: _stage_pack()],
 		["Реки", func() -> void: _stage_rivers()],
 		["Биомы", func() -> void: _stage_biomes()],
+		["Лёд", func() -> void: _stage_ice()],
+		["Ресурсы", func() -> void: _stage_goods()],
 		["Население", func() -> void: _stage_population()],
 		["Культуры", func() -> void: _stage_cultures()],
 		["Города", func() -> void: _stage_burgs()],
 		["Государства", func() -> void: _stage_states()],
+		["Дипломатия", func() -> void: _stage_diplomacy()],
+		["Дороги", func() -> void: _stage_routes()],
 		["Религии", func() -> void: _stage_religions()],
 		["Провинции", func() -> void: _stage_provinces()],
 		["Имена", func() -> void: _stage_names()],
+		["Рынки", func() -> void: _stage_markets()],
+		["Производство", func() -> void: _stage_production()],
+		["Налоги", func() -> void: _stage_taxes()],
+		["Армии", func() -> void: _stage_military()],
+		["Маркеры", func() -> void: _stage_markers()],
+		["Зоны", func() -> void: _stage_zones()],
+		["Геральдика", func() -> void: _stage_emblems()],
+		["Путешествия", func() -> void: _stage_journeys()],
 	]
 
 
@@ -179,6 +193,9 @@ func _stage_provinces() -> void:
 
 
 func _stage_names() -> void:
+	# riversSpecify: re-check parent/basin chains after all rivers settled
+	if hydrology != null:
+		hydrology.specify()
 	# river names and types + lake names, based on local cultures
 	if pack.rivers.size() > 1:
 		var lengths: Array = []
@@ -204,14 +221,71 @@ func _stage_names() -> void:
 				else:
 					river["type"] = "Река"
 
-	for feature in pack.features:
-		if feature == null or feature.is_empty() or feature["type"] != "lake":
-			continue
-		var shoreline: PackedInt32Array = feature["shoreline"]
-		if shoreline.is_empty():
-			continue
-		var land_cell: int = shoreline[0]
-		feature["name"] = Names.get_culture(pack.culture[land_cell])
+	# ocean, sea, lake and landmass names (features-generator defineNames)
+	var feature_names := FmgFeatureNames.new(rng, pack)
+	feature_names.define_names()
+
+
+func _stage_ice() -> void:
+	var ice := FmgIce.new(rng, grid, pack)
+	ice.generate()
+
+
+func _stage_goods() -> void:
+	var goods := FmgGoods.new(rng, pack, grid)
+	goods.generate()
+
+
+func _stage_diplomacy() -> void:
+	var diplomacy := FmgDiplomacy.new(rng, pack, grid)
+	diplomacy.generate()
+
+
+func _stage_routes() -> void:
+	routes_gen = FmgRoutes.new(rng, pack, grid)
+	routes_gen.generate()
+
+
+func _stage_markets() -> void:
+	var markets := FmgMarkets.new(rng, pack, grid)
+	markets.generate()
+
+
+func _stage_production() -> void:
+	var production := FmgProduction.new(rng, pack, grid)
+	production.produce()
+
+
+func _stage_taxes() -> void:
+	var production := FmgProduction.new(rng, pack, grid)
+	production.collect_taxes()
+
+
+func _stage_military() -> void:
+	var military := FmgMilitary.new(rng, pack, grid)
+	military.generate()
+
+
+func _stage_markers() -> void:
+	var markers := FmgMarkers.new(rng, pack, grid, routes_gen)
+	markers.generate()
+
+
+func _stage_zones() -> void:
+	var zones := FmgZones.new(rng, pack, grid, routes_gen)
+	zones.generate()
+
+
+func _stage_emblems() -> void:
+	var emblems := FmgEmblems.new(rng, pack)
+	emblems.generate()
+
+
+func _stage_journeys() -> void:
+	if routes_gen == null:
+		return
+	var journeys := FmgJourneys.new(rng, pack, routes_gen)
+	journeys.generate(3)
 
 
 ## regenerates everything downstream of the heightmap (after a height edit)
@@ -250,9 +324,14 @@ func get_stats_text() -> String:
 		if b != null:
 			burgs_count += 1
 	var rivers_count: int = maxi(pack.rivers.size() - 1, 0)
-	return "Ячеек: %d · Суши: %d%% · Государств: %d · Городов: %d · Рек: %d · Время: %d мс" % [
+	var regiments: int = 0
+	for s in pack.states:
+		if s != null and s.has("military"):
+			regiments += (s["military"] as Array).size()
+	return "Ячеек: %d · Суши: %d%% · Государств: %d · Городов: %d · Рек: %d · Дорог: %d · Маркеров: %d · Полков: %d · Зон: %d · Время: %d мс" % [
 		pack.cell_count(), int(100.0 * land_cells / maxi(pack.cell_count(), 1)),
-		states_count, burgs_count, rivers_count, generation_time_ms
+		states_count, burgs_count, rivers_count, pack.routes.size(),
+		pack.markers.size(), regiments, pack.zones.size(), generation_time_ms
 	]
 
 
@@ -302,7 +381,9 @@ func save_map(path: String) -> Error:
 			"religion": Array(pack.religion),
 			"burg": Array(pack.burg),
 			"s": Array(pack.s),
-			"pop": Array(pack.pop)
+			"pop": Array(pack.pop),
+			"good": Array(pack.good),
+			"market": Array(pack.market)
 		},
 		"cultures": pack.cultures,
 		"states": pack.states,
@@ -310,6 +391,13 @@ func save_map(path: String) -> Error:
 		"provinces": pack.provinces,
 		"religions": pack.religions,
 		"rivers": pack.rivers,
+		"routes": _pack_routes(),
+		"markers": _pack_markers(),
+		"zones": pack.zones,
+		"markets": pack.markets,
+		"deals": pack.deals,
+		"ice": _pack_ice(),
+		"journeys": _pack_journeys(),
 		"featureNames": _collect_feature_names()
 	}
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -325,6 +413,50 @@ func _pack_points(points: PackedVector2Array) -> Array:
 	out.resize(points.size())
 	for i: int in points.size():
 		out[i] = [points[i].x, points[i].y]
+	return out
+
+
+## routes hold PackedVector2Array points which JSON.stringify would mangle
+func _pack_routes() -> Array:
+	var out: Array = []
+	for route: Variant in pack.routes:
+		var r: Dictionary = (route as Dictionary).duplicate()
+		r["points"] = _pack_points(r.get("points", PackedVector2Array()))
+		out.append(r)
+	return out
+
+
+func _pack_ice() -> Array:
+	var out: Array = []
+	for ice: Variant in pack.ice:
+		var e: Dictionary = (ice as Dictionary).duplicate()
+		e["points"] = _pack_points(e.get("points", PackedVector2Array()))
+		out.append(e)
+	return out
+
+
+func _pack_markers() -> Array:
+	var out: Array = []
+	for marker: Variant in pack.markers:
+		out.append((marker as Dictionary).duplicate())
+	return out
+
+
+func _pack_journeys() -> Array:
+	var out: Array = []
+	for journey: Variant in pack.journeys:
+		var j: Dictionary = (journey as Dictionary).duplicate()
+		j["points"] = _pack_points(j.get("points", PackedVector2Array()))
+		out.append(j)
+	return out
+
+
+func _unpack_journeys(arr: Array) -> Array:
+	var out: Array = []
+	for entry: Variant in arr:
+		var j: Dictionary = (entry as Dictionary).duplicate()
+		j["points"] = _unpack_points(Array(j.get("points", [])))
+		out.append(j)
 	return out
 
 
@@ -417,6 +549,12 @@ func load_map(path: String) -> Error:
 	pack.burg = PackedInt32Array(Array(pack_data["burg"]))
 	pack.s = PackedInt32Array(Array(pack_data["s"]))
 	pack.pop = PackedFloat32Array(Array(pack_data["pop"]))
+	pack.good = PackedInt32Array(Array(pack_data.get("good", [])))
+	if pack.good.is_empty():
+		pack.good.resize(pack.cell_count())
+	pack.market = PackedInt32Array(Array(pack_data.get("market", [])))
+	if pack.market.is_empty():
+		pack.market.resize(pack.cell_count())
 
 	pack.biomes = FmgBiomes.get_default_biomes()
 	FmgFeatures.markup_pack(pack, map_width, map_height)
@@ -434,6 +572,15 @@ func load_map(path: String) -> Error:
 	pack.provinces = data.get("provinces", [null])
 	pack.religions = data.get("religions", [null])
 	pack.rivers = data.get("rivers", [null])
+	pack.routes = _unpack_routes(data.get("routes", []))
+	pack.markers = data.get("markers", [])
+	pack.zones = data.get("zones", [])
+	pack.markets = data.get("markets", [])
+	pack.deals = data.get("deals", [])
+	pack.ice = _unpack_ice(data.get("ice", []))
+	pack.journeys = _unpack_journeys(data.get("journeys", []))
+	_rebuild_cell_routes()
+	_rebuild_route_links()
 
 	hydrology = FmgHydrology.new(rng, grid, pack)
 	burgs = FmgBurgs.new(rng, pack, grid)
@@ -449,6 +596,51 @@ func _unpack_points(arr: Array) -> PackedVector2Array:
 	for i: int in arr.size():
 		out[i] = Vector2(arr[i][0], arr[i][1])
 	return out
+
+
+func _unpack_routes(arr: Array) -> Array:
+	var out: Array = []
+	for entry: Variant in arr:
+		var r: Dictionary = (entry as Dictionary).duplicate()
+		r["points"] = _unpack_points(Array(r.get("points", [])))
+		out.append(r)
+	return out
+
+
+func _unpack_ice(arr: Array) -> Array:
+	var out: Array = []
+	for entry: Variant in arr:
+		var e: Dictionary = (entry as Dictionary).duplicate()
+		e["points"] = _unpack_points(Array(e.get("points", [])))
+		out.append(e)
+	return out
+
+
+## rebuild pack.cell_routes / route_links from loaded routes
+func _rebuild_cell_routes() -> void:
+	pack.cell_routes = {}
+	for route: Variant in pack.routes:
+		var rid: int = int((route as Dictionary).get("i", 0))
+		for i: int in (route as Dictionary).get("cells", []).size() - 1:
+			var a: int = int((route as Dictionary)["cells"][i])
+			var b: int = int((route as Dictionary)["cells"][i + 1])
+			if not pack.cell_routes.has(a):
+				pack.cell_routes[a] = {}
+			if not pack.cell_routes.has(b):
+				pack.cell_routes[b] = {}
+			pack.cell_routes[a][b] = rid
+			pack.cell_routes[b][a] = rid
+
+
+func _rebuild_route_links() -> void:
+	pack.route_links = {}
+	for route: Variant in pack.routes:
+		var cells_arr: Array = (route as Dictionary).get("cells", [])
+		for i: int in cells_arr.size() - 1:
+			pack.route_links["%d-%d" % [cells_arr[i], cells_arr[i + 1]]] = true
+			pack.route_links["%d-%d" % [cells_arr[i + 1], cells_arr[i]]] = true
+	if routes_gen != null:
+		routes_gen.route_links = pack.route_links
 
 
 func _rebuild_voronoi(graph: FmgGraph) -> void:
@@ -470,10 +662,22 @@ func rebuild_after_height_edit() -> void:
 	_stage_pack()
 	_stage_rivers()
 	_stage_biomes()
+	_stage_ice()
+	_stage_goods()
 	_stage_population()
 	_stage_cultures()
 	_stage_burgs()
 	_stage_states()
+	_stage_diplomacy()
+	_stage_routes()
 	_stage_religions()
 	_stage_provinces()
 	_stage_names()
+	_stage_markets()
+	_stage_production()
+	_stage_taxes()
+	_stage_military()
+	_stage_markers()
+	_stage_zones()
+	_stage_emblems()
+	_stage_journeys()

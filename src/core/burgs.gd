@@ -35,6 +35,7 @@ func generate() -> void:
 	_generate_capitals(populated_cells)
 	_generate_towns(populated_cells)
 	assign_ports()
+	specify() # population, type, citadel/walls/... — like the original's generate() tail
 
 
 func _burgs_number() -> int:
