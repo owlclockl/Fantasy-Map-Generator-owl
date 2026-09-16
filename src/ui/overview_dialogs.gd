@@ -1,11 +1,10 @@
 class_name FmgOverviewDialogs
 extends Control
 ## Draggable overview windows (Burgs / States / Rivers / Markers / Markets /
-## Diplomacy) in the FMG dialog style: a header strip with the title, a filter
-## field and a scrollable table. One window at a time, like the original's
-## dialogs which stack on the right side of the screen.
+## Diplomacy) in the Apple Liquid Glass dialog style: frosted glass panel,
+## specular rim, macOS-style header, search field and scrollable data table.
 
-const WINDOW_SIZE := Vector2(560, 420)
+const WINDOW_SIZE := Vector2(620, 450)
 
 var sim: FmgSim = null
 var view: MapView = null
@@ -27,57 +26,76 @@ func setup(sim_ref: FmgSim, view_ref: MapView, theme_ref: FmgUiTheme) -> void:
 	ui_theme = theme_ref
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 	window = PanelContainer.new()
 	window.visible = false
 	window.custom_minimum_size = WINDOW_SIZE
-	window.add_theme_font_override("font", FmgUiTheme.mono())
-	window.add_theme_font_size_override("font_size", 12)
+	window.set_meta("fmg", "panel")
 	add_child(window)
+
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 4)
+	box.add_theme_constant_override("separation", 8)
 	window.add_child(box)
 
+	# Window header (macOS style frosted glass bar with grab handle & close pill)
 	var header := PanelContainer.new()
 	header.mouse_filter = Control.MOUSE_FILTER_STOP
 	header.set_meta("fmg", "dragbar")
 	box.add_child(header)
+
 	var header_row := HBoxContainer.new()
 	header_row.add_theme_constant_override("separation", 8)
 	header.add_child(header_row)
+
 	title_label = Label.new()
-	title_label.add_theme_color_override("font_color", Color("#f0ede4"))
 	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_label.add_theme_font_override("font", FmgUiTheme.font_ui())
+	title_label.add_theme_font_size_override("font_size", 14)
+	title_label.add_theme_color_override("font_color", Color.WHITE)
 	header_row.add_child(title_label)
+
 	var close := Button.new()
 	close.text = "✕"
 	close.tooltip_text = "Закрыть окно (Esc)"
+	close.custom_minimum_size = Vector2(26, 26)
 	close.set_meta("fmg", "button")
 	close.pressed.connect(close_window)
 	header_row.add_child(close)
 	header.gui_input.connect(_on_header_input)
 
+	# Spotlight-style search pill
 	filter_edit = LineEdit.new()
-	filter_edit.placeholder_text = "Фильтр по названию…"
+	filter_edit.placeholder_text = "🔍 Фильтр по названию…"
 	filter_edit.set_meta("fmg", "field")
+	filter_edit.add_theme_font_override("font", FmgUiTheme.font_ui())
 	filter_edit.text_changed.connect(_apply_filter)
 	box.add_child(filter_edit)
+
+	# Table card container
+	var table_card := PanelContainer.new()
+	table_card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	table_card.set_meta("fmg", "card")
+	box.add_child(table_card)
 
 	table_scroll = ScrollContainer.new()
 	table_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	table_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	table_scroll.set_meta("fmg", "scroll")
-	box.add_child(table_scroll)
+	table_card.add_child(table_scroll)
+
 	table_grid = GridContainer.new()
 	table_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	table_grid.add_theme_constant_override("h_separation", 10)
-	table_grid.add_theme_constant_override("v_separation", 2)
+	table_grid.add_theme_constant_override("h_separation", 14)
+	table_grid.add_theme_constant_override("v_separation", 4)
 	table_scroll.add_child(table_grid)
 
 	info_label = Label.new()
 	info_label.set_meta("fmg", "tip")
+	info_label.add_theme_font_override("font", FmgUiTheme.font_ui())
 	info_label.add_theme_font_size_override("font_size", 11)
 	box.add_child(info_label)
+
 	ui_theme.changed.connect(_restyle)
 	_restyle()
 
@@ -105,7 +123,7 @@ func open(kind: String) -> void:
 			_build_diplomacy()
 		_:
 			return
-	window.position = Vector2(380, 40)
+	window.position = Vector2(380, 50)
 	window.visible = true
 	filter_edit.text = ""
 	_apply_filter("")
@@ -143,6 +161,9 @@ func _start_table(columns: Array) -> void:
 		var label := Label.new()
 		label.text = column
 		label.set_meta("fmg", "table_header")
+		label.add_theme_font_override("font", FmgUiTheme.font_ui())
+		label.add_theme_font_size_override("font_size", 12)
+		label.add_theme_color_override("font_color", Color(0.9, 0.93, 1.0))
 		table_grid.add_child(label)
 
 
@@ -163,17 +184,27 @@ func _apply_filter(_query: String) -> void:
 			continue
 		child.queue_free()
 	var needle: String = filter_edit.text.strip_edges().to_lower()
+	if needle.begins_with("🔍"):
+		needle = needle.substr(1).strip_edges()
 	var shown: int = 0
 	for row_value: Variant in _rows:
 		var row: Dictionary = row_value
 		if not needle.is_empty() and not str(row["name"]).to_lower().contains(needle):
 			continue
+		var col_idx: int = 0
 		for value: Variant in row["values"]:
 			var label := Label.new()
-			label.text = str(value)
+			var val_str: String = str(value)
+			label.text = val_str
+			label.set_meta("fmg", "label")
+			# Use mono font for numbers and short codes, font_ui for names
+			var is_numeric: bool = val_str.is_valid_float() or val_str.is_valid_int()
+			label.add_theme_font_override("font", FmgUiTheme.mono() if is_numeric else FmgUiTheme.font_ui())
 			label.add_theme_font_size_override("font_size", 12)
+			label.add_theme_color_override("font_color", FmgUiTheme.TEXT_COLOR)
 			label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			table_grid.add_child(label)
+			col_idx += 1
 		shown += 1
 	info_label.text = "Показано строк: %d из %d" % [shown, _rows.size()]
 
@@ -186,7 +217,7 @@ func _table_name(table: Array, entry_id: int) -> String:
 
 func _build_burgs() -> void:
 	var pack: FmgGraph = sim.pack
-	title_label.text = "Обзор городов"
+	title_label.text = "🏙️ Обзор городов"
 	_start_table(["Город", "Государство", "Культура", "Насел., тыс.", "Столица", "Порт"])
 	for burg_value: Variant in pack.burgs:
 		if burg_value == null:
@@ -205,7 +236,7 @@ func _build_burgs() -> void:
 
 func _build_states() -> void:
 	var pack: FmgGraph = sim.pack
-	title_label.text = "Обзор государств"
+	title_label.text = "🚩 Обзор государств"
 	_start_table(["Государство", "Форма правления", "Столица", "Городов", "Площ., тыс. км²", "Насел., млн"])
 	var km_per_px: float = view.distance_scale if view != null else 3.0
 	var km2_per_px2: float = km_per_px * km_per_px
@@ -245,7 +276,7 @@ func _build_states() -> void:
 
 func _build_rivers() -> void:
 	var pack: FmgGraph = sim.pack
-	title_label.text = "Обзор рек"
+	title_label.text = "🌊 Обзор рек"
 	_start_table(["Река", "Тип", "Длина, км", "Ширина, усл.", "Ячеек"])
 	var km_per_px: float = view.distance_scale if view != null else 3.0
 	for river_value: Variant in pack.rivers:
@@ -273,7 +304,7 @@ func _build_rivers() -> void:
 
 func _build_markers() -> void:
 	var pack: FmgGraph = sim.pack
-	title_label.text = "Обзор маркеров"
+	title_label.text = "📍 Обзор маркеров"
 	_start_table(["Тип", "№", "X", "Y", "Описание"])
 	for marker_value: Variant in pack.markers:
 		var marker: Dictionary = marker_value
@@ -290,7 +321,7 @@ func _build_markers() -> void:
 
 func _build_markets() -> void:
 	var pack: FmgGraph = sim.pack
-	title_label.text = "Обзор рынков"
+	title_label.text = "⚖️ Обзор рынков"
 	_start_table(["Рынок", "Центр", "Товаров", "Сделок", "Казна"])
 	var deals_by_market: Dictionary = {}
 	var tax_by_market: Dictionary = {}
@@ -317,7 +348,7 @@ func _build_markets() -> void:
 
 func _build_diplomacy() -> void:
 	var pack: FmgGraph = sim.pack
-	title_label.text = "Дипломатия"
+	title_label.text = "🤝 Дипломатия"
 	_start_table(["Государство", "Отношения с соседями и державами"])
 	for state_value: Variant in pack.states:
 		var state: Dictionary = state_value
