@@ -291,6 +291,8 @@ static func generate_ocean_outlines(grid: FmgGraph, limits: Array) -> Array:
 	var cells := grid
 	var vertices := grid.voronoi.vertices
 	var points_n: int = grid.cell_count()
+	if cells.t.size() < points_n:
+		return [] # the distance field is not built yet: markup_grid has not run
 	var used := PackedByteArray()
 	used.resize(points_n)
 	var outlines := {}
@@ -306,7 +308,7 @@ static func generate_ocean_outlines(grid: FmgGraph, limits: Array) -> Array:
 			continue
 		used[i] = 1
 
-		var chain := _connect_outline_vertices(cells, vertices, start, t, used)
+		var chain := _connect_outline_vertices(cells, vertices, start, t, used, points_n)
 		if chain.size() < 4:
 			continue
 		var relax: int = 1 + t * -2
@@ -348,7 +350,17 @@ static func _find_outline_start(cells: FmgGraph, vertices: FmgVoronoi.Vertices, 
 	return -1
 
 
-static func _connect_outline_vertices(cells: FmgGraph, vertices: FmgVoronoi.Vertices, start: int, t: int, used: PackedByteArray) -> PackedInt32Array:
+## distance-from-coast value of a cell adjacent to a vertex. Boundary pseudo-points
+## (id >= points_n) clip the outer cells but own no cell data, so they read as
+## unmarked: in the original JS `cells.t[id]` is `undefined` there, which is falsy
+## exactly like 0, while a GDScript PackedInt32Array raises "Out of bounds get index".
+static func _cell_distance(cells: FmgGraph, cell: int, points_n: int) -> int:
+	if cell < 0 or cell >= points_n:
+		return 0
+	return cells.t[cell]
+
+
+static func _connect_outline_vertices(cells: FmgGraph, vertices: FmgVoronoi.Vertices, start: int, t: int, used: PackedByteArray, points_n: int) -> PackedInt32Array:
 	var chain := PackedInt32Array()
 	var current: int = start
 	var i: int = 0
@@ -356,15 +368,19 @@ static func _connect_outline_vertices(cells: FmgGraph, vertices: FmgVoronoi.Vert
 		var prev: int = chain[chain.size() - 1] if chain.size() > 0 else -1
 		chain.append(current)
 
+		# boundary pseudo-points own no cell: nothing to mark as used there
 		for cell: int in vertices.c[current]:
-			if cells.t[cell] == t:
+			if cell >= 0 and cell < points_n and cells.t[cell] == t:
 				used[cell] = 1
 
 		var vv: PackedInt32Array = vertices.v[current]
 		var c: PackedInt32Array = vertices.c[current]
-		var c0: bool = cells.t[c[0]] == 0 or cells.t[c[0]] == t - 1
-		var c1: bool = cells.t[c[1]] == 0 or cells.t[c[1]] == t - 1
-		var c2: bool = cells.t[c[2]] == 0 or cells.t[c[2]] == t - 1
+		var t0: int = _cell_distance(cells, c[0], points_n)
+		var t1: int = _cell_distance(cells, c[1], points_n)
+		var t2: int = _cell_distance(cells, c[2], points_n)
+		var c0: bool = t0 == 0 or t0 == t - 1
+		var c1: bool = t1 == 0 or t1 == t - 1
+		var c2: bool = t2 == 0 or t2 == t - 1
 		if vv[0] != -1 and vv[0] != prev and c0 != c1: current = vv[0]
 		elif vv[1] != -1 and vv[1] != prev and c1 != c2: current = vv[1]
 		elif vv[2] != -1 and vv[2] != prev and c0 != c2: current = vv[2]
