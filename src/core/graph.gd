@@ -35,6 +35,8 @@ var religion := PackedInt32Array() # religion id (pack only)
 var s := PackedInt32Array() # population suitability score (pack only)
 var pop := PackedFloat32Array() # rural population (pack only)
 var burg := PackedInt32Array() # burg id (pack only)
+var good := PackedInt32Array() # resource id per cell, 0 = none (pack only)
+var market := PackedInt32Array() # market id per cell, 0 = none (pack only)
 
 # --- object tables ---
 var features: Array = [] # Dictionary per feature; index == feature id; [0] is null
@@ -45,6 +47,15 @@ var burgs: Array = [] # Dictionary per burg
 var states: Array = [] # Dictionary per state
 var provinces: Array = [] # Dictionary per province
 var religions: Array = [] # Dictionary per religion
+var routes: Array = [] # road/trail/sea-route dictionaries (routes-generator)
+var markers: Array = [] # POI marker dictionaries (markers-generator)
+var zones: Array = [] # named zone dictionaries (zones-generator)
+var markets: Array = [] # market dictionaries (markets-generator)
+var ice: Array = [] # glacier/iceberg polygons (ice-generator)
+var route_links: Dictionary = {} # "cellA-cellB" -> true adjacency of all routes
+var cell_routes: Dictionary = {} # cellId -> {neibCellId: routeId} adjacency
+var deals: Array = [] # trade deal dictionaries (markets-generator)
+var journeys: Array = [] # journey dictionaries (journeys-generator)
 
 var width: float = 1280.0
 var height: float = 800.0

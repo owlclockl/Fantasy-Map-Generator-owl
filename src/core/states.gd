@@ -1,8 +1,8 @@
 class_name FmgStates
 extends RefCounted
 ## States: created from capital burgs, expanded with cost Dijkstra,
-## normalized, colored, measured. Port of states-generator.ts
-## (diplomacy/campaigns/military skipped in this edition).
+## normalized, colored, measured. Port of states-generator.ts.
+## Diplomacy/campaigns live in diplomacy.gd, armies in military.gd.
 
 const SEA_LEVEL: int = 20
 
@@ -134,8 +134,10 @@ func expand_states() -> void:
 	for state in pack.states:
 		if state == null or int(state["i"]) == 0:
 			continue
-		var capital_cell: int = pack.burg[state["capital"]]
-		pack.state[capital_cell] = state["i"]
+		var capital_burg_id: int = int(state["capital"])
+		if capital_burg_id > 0 and capital_burg_id < pack.burgs.size() and pack.burgs[capital_burg_id] != null:
+			# the original marks the capital burg's cell: burgs[state.capital].cell
+			pack.state[int(pack.burgs[capital_burg_id]["cell"])] = int(state["i"])
 		var native_biome: int = pack.biome[int(pack.cultures[state["culture"]]["center"])]
 		queue.push([int(state["center"]), 0.0, int(state["i"]), native_biome], 0.0)
 		cost[int(state["center"])] = 1.0

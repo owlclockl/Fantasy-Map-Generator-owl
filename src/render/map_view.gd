@@ -39,6 +39,16 @@ var show_borders: bool = true
 var show_labels: bool = true
 var show_burgs: bool = true
 var show_relief: bool = true # hillshading-ish height tint over biomes
+var show_ice: bool = true
+var show_routes: bool = true
+var show_feature_labels: bool = true # oceans, seas, lakes, islands
+var show_province_labels: bool = false
+var show_markers: bool = true
+var show_armies: bool = false
+var show_zones: bool = false
+var show_goods: bool = false
+var show_emblems: bool = false
+var show_relief_icons: bool = true # mountain and forest glyphs
 var show_cell_borders: bool = false # debug
 
 # cached geometry
@@ -46,6 +56,9 @@ var _land_rings: Array = [] # {points, feature}
 var _lake_rings: Array = []
 var _ocean_rings: Array = [] # {t, rings}
 var _river_polys: Array = [] # {points, river}
+var _feature_labels: Array = [] # {name, pos, size, color}
+var _mountain_points: PackedVector2Array = PackedVector2Array()
+var _tree_points: PackedVector2Array = PackedVector2Array()
 var _font: Font = null
 
 # brush preview (set by main.gd)
@@ -63,9 +76,14 @@ func rebuild_cache() -> void:
 	_lake_rings = []
 	_ocean_rings = []
 	_river_polys = []
+	_feature_labels = []
+	_mountain_points = PackedVector2Array()
+	_tree_points = PackedVector2Array()
 	if sim == null or sim.pack == null:
 		queue_redraw_all()
 		return
+	_build_feature_labels()
+	_build_relief_icons()
 
 	# coastline rings per feature, fractalized deterministically per feature id
 	for feature in sim.pack.features:
@@ -169,6 +187,18 @@ func _draw() -> void:
 		if show_provinces:
 			_draw_cell_overlay(_cell_province_color, 0.25)
 
+	# --- ice (glaciers on land, icebergs on water) ---
+	if show_ice:
+		_draw_ice()
+
+	# --- zones (translucent named areas) ---
+	if show_zones:
+		_draw_zones()
+
+	# --- goods (resource dots) ---
+	if show_goods:
+		_draw_goods()
+
 	if show_cell_borders:
 		_draw_cell_borders()
 	if show_provinces:
@@ -187,13 +217,42 @@ func _draw() -> void:
 		for entry: Dictionary in _river_polys:
 			draw_colored_polygon(entry["points"], COL_RIVER)
 
+	# --- relief icons (mountains and forests) ---
+	if show_relief_icons:
+		_draw_relief_icons()
+
+	# --- routes (roads, trails, sea routes) ---
+	if show_routes:
+		_draw_routes()
+		_draw_journeys()
+
 	# --- burgs ---
 	if show_burgs:
 		_draw_burgs()
 
+	# --- emblems (heraldry shields at state poles) ---
+	if show_emblems:
+		_draw_emblems()
+
+	# --- armies ---
+	if show_armies:
+		_draw_armies()
+
+	# --- markers (points of interest) ---
+	if show_markers:
+		_draw_markers()
+
 	# --- labels ---
 	if show_labels:
 		_draw_labels()
+
+	# --- feature labels (oceans, seas, lakes, islands) ---
+	if show_feature_labels:
+		_draw_feature_labels()
+
+	# --- province labels ---
+	if show_province_labels:
+		_draw_province_labels()
 
 
 func _cell_color_safe(_cell_id: int) -> Color:
@@ -374,3 +433,374 @@ func _draw_labels() -> void:
 		var pos := Vector2(b["x"], b["y"]) + Vector2(0, 4.0 + font_size * 0.9)
 		draw_string_outline(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), 2, COL_TEXT_OUT)
 		draw_string(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), COL_TEXT)
+
+
+# ---------------------------------------------------------------------------
+# Second-contour layers (ice, goods, routes, markers, armies, zones,
+# emblems, feature/province labels, relief icons)
+
+func _build_feature_labels() -> void:
+	var pack: FmgGraph = sim.pack
+	for feature in pack.features:
+		if feature == null or feature.is_empty():
+			continue
+		var name_v: String = feature.get("name", "")
+		if name_v == "":
+			continue
+		var type: String = feature.get("type", "")
+		if type != "ocean" and type != "lake" and type != "island":
+			continue
+		if type == "island" and int(feature.get("cells", 0)) < 8:
+			continue
+		var pos: Vector2
+		if type == "ocean":
+			# ocean features carry no vertex chain in this port — average the
+			# feature's water cells, biased to the inner map rectangle
+			pos = _ocean_label_position(int(feature["i"]))
+			if pos == Vector2.ZERO:
+				continue
+		else:
+			var chain: PackedInt32Array = feature.get("vertices", PackedInt32Array())
+			if chain.size() < 3:
+				continue
+			var acc := Vector2.ZERO
+			var count: int = 0
+			for v: int in chain:
+				var p: Vector2 = pack.voronoi.vertices.p[v]
+				if p.x > 8.0 and p.x < sim.map_width - 8.0 and p.y > 8.0 and p.y < sim.map_height - 8.0:
+					acc += p
+					count += 1
+			if count < 3:
+				for v: int in chain:
+					acc += pack.voronoi.vertices.p[v]
+				count = chain.size()
+			pos = acc / float(count)
+		var cells: float = float(feature.get("cells", 0))
+		var size: float
+		var color: Color
+		if type == "ocean":
+			size = clampf(sqrt(cells) * 2.0, 16.0, 40.0)
+			color = Color("#cfe0f2")
+		elif type == "lake":
+			size = clampf(sqrt(cells) * 1.6, 8.0, 18.0)
+			color = Color("#dbe8f5")
+		elif feature.get("subtype", "") == "continent":
+			size = clampf(sqrt(cells) * 0.9, 9.0, 24.0)
+			color = COL_TEXT
+		else:
+			size = clampf(sqrt(cells) * 1.1, 7.0, 15.0)
+			color = COL_TEXT
+		_feature_labels.append({"name": name_v, "pos": pos, "size": size, "color": color, "type": type})
+
+
+## Average position of a feature's water cells inside the inner map area.
+func _ocean_label_position(feature_id: int) -> Vector2:
+	var pack: FmgGraph = sim.pack
+	var margin: float = 30.0
+	var acc := Vector2.ZERO
+	var count: int = 0
+	for i: int in pack.cell_count():
+		if pack.h[i] >= 20 or pack.f[i] != feature_id:
+			continue
+		var p: Vector2 = pack.points[i]
+		if p.x > margin and p.x < sim.map_width - margin and p.y > margin and p.y < sim.map_height - margin:
+			acc += p
+			count += 1
+	if count == 0:
+		return Vector2.ZERO
+	return acc / float(count)
+
+
+func _build_relief_icons() -> void:
+	var pack: FmgGraph = sim.pack
+	for i: int in pack.cell_count():
+		if pack.h[i] < 20:
+			continue
+		var jitter := Vector2(float((i * 7919) % 11) - 5.0, float((i * 104729) % 11) - 5.0) * 0.35
+		if pack.h[i] >= 70:
+			_mountain_points.append(pack.points[i] + jitter)
+		elif [5, 6, 7, 8, 9].has(pack.biome[i]) and i % 3 == 0:
+			_tree_points.append(pack.points[i] + jitter)
+
+
+func _draw_ice() -> void:
+	var pack: FmgGraph = sim.pack
+	for ice: Variant in pack.ice:
+		var e: Dictionary = ice
+		var points: PackedVector2Array = e.get("points", PackedVector2Array())
+		if points.size() < 3:
+			continue
+		draw_colored_polygon(points, Color(0.94, 0.97, 1.0, 0.92))
+		var outline := PackedVector2Array(points)
+		outline.append(points[0])
+		draw_polyline(outline, Color(0.8, 0.88, 0.96, 0.9), 0.6, true)
+
+
+func _draw_goods() -> void:
+	var pack: FmgGraph = sim.pack
+	for i: int in pack.cell_count():
+		var good_id: int = pack.good[i]
+		if good_id <= 0 or good_id > FmgGoods.GOODS_DATA.size():
+			continue
+		var color: Color = Color.html(FmgGoods.GOODS_DATA[good_id - 1]["color"])
+		var p: Vector2 = pack.points[i]
+		var rect := Rect2(p - Vector2(1.4, 1.4), Vector2(2.8, 2.8))
+		draw_rect(rect, color.darkened(0.35), false, 0.4, true)
+		draw_rect(rect.grow(-0.7), color, true)
+
+
+func _draw_zones() -> void:
+	var pack: FmgGraph = sim.pack
+	for zone: Variant in pack.zones:
+		var z: Dictionary = zone
+		var color: Color = Color.html(z.get("color", "#888888"))
+		color.a = 0.16
+		for cell_id: Variant in z.get("cells", []):
+			var cid: int = int(cell_id)
+			if cid < 0 or cid >= pack.cell_count():
+				continue
+			var poly := pack.get_polygon(cid)
+			if poly.size() >= 3:
+				draw_colored_polygon(poly, color)
+
+
+func _draw_routes() -> void:
+	var pack: FmgGraph = sim.pack
+	# sea routes first (under land roads)
+	for route: Variant in pack.routes:
+		var r: Dictionary = route
+		if r.get("group", "") != "searoutes":
+			continue
+		var points: PackedVector2Array = r.get("points", PackedVector2Array())
+		if points.size() >= 2:
+			_draw_dashed(points, Color("#4a7ab5"), 0.7, 6.0, 3.0)
+	for route: Variant in pack.routes:
+		var r: Dictionary = route
+		var group: String = r.get("group", "")
+		if group == "searoutes":
+			continue
+		var points: PackedVector2Array = r.get("points", PackedVector2Array())
+		if points.size() < 2:
+			continue
+		if group == "roads":
+			draw_polyline(points, Color("#7a5c3e"), 1.1, true)
+		else:
+			_draw_dashed(points, Color("#8a7355"), 0.6, 3.0, 2.0)
+
+
+func _draw_journeys() -> void:
+	var pack: FmgGraph = sim.pack
+	for journey: Variant in pack.journeys:
+		var j: Dictionary = journey
+		var points: PackedVector2Array = j.get("points", PackedVector2Array())
+		if points.size() >= 2:
+			_draw_dashed(points, Color("#c0392b"), 1.2, 5.0, 3.0)
+
+
+func _draw_dashed(points: PackedVector2Array, color: Color, width: float, dash: float, gap: float) -> void:
+	var cycle: float = dash + gap
+	var acc: float = 0.0
+	for i: int in points.size() - 1:
+		var a: Vector2 = points[i]
+		var b: Vector2 = points[i + 1]
+		var seg_len: float = a.distance_to(b)
+		if seg_len <= 0.0:
+			continue
+		var t: float = 0.0
+		while t < seg_len:
+			var pos_in_cycle: float = fmod(acc, cycle)
+			var drawing: bool = pos_in_cycle < dash
+			var remaining_in_phase: float = (dash - pos_in_cycle) if drawing else (cycle - pos_in_cycle)
+			var step: float = minf(remaining_in_phase, seg_len - t)
+			if drawing:
+				draw_line(a.lerp(b, t / seg_len), a.lerp(b, (t + step) / seg_len), color, width, true)
+			t += step
+			acc += step
+
+
+func _draw_markers() -> void:
+	var pack: FmgGraph = sim.pack
+	for marker: Variant in pack.markers:
+		var m: Dictionary = marker
+		var pos := Vector2(float(m.get("x", 0.0)), float(m.get("y", 0.0)))
+		var mtype: String = m.get("type", "")
+		var color := Color("#8b4513")
+		if mtype.contains("monster") or mtype == "pirates":
+			color = Color("#5e3b8a")
+		elif mtype.contains("sacred") or mtype == "portals":
+			color = Color("#b8860b")
+		elif mtype == "volcanoes" or mtype == "battlefields":
+			color = Color("#a02c2c")
+		elif mtype.contains("water") or mtype == "waterfalls" or mtype == "lighthouses":
+			color = Color("#2b6cb0")
+		elif mtype == "mines" or mtype == "dungeons" or mtype == "caves":
+			color = Color("#4a4a4a")
+		var pts := PackedVector2Array([
+			pos + Vector2(0, -2.4), pos + Vector2(2.4, 0),
+			pos + Vector2(0, 2.4), pos + Vector2(-2.4, 0)
+		])
+		draw_colored_polygon(pts, color)
+		draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2], pts[3], pts[0]]), Color(0, 0, 0, 0.5), 0.5, true)
+
+
+func _draw_armies() -> void:
+	var pack: FmgGraph = sim.pack
+	for state in pack.states:
+		if state == null or int(state.get("i", 0)) == 0:
+			continue
+		var color: Color = Color.html(state.get("color", "#888888"))
+		for regiment: Variant in state.get("military", []):
+			var reg: Dictionary = regiment
+			var pos := Vector2(float(reg.get("x", 0.0)), float(reg.get("y", 0.0)))
+			var troops: int = int(reg.get("a", 0))
+			var size: float = clampf(1.5 + sqrt(float(troops)) / 30.0, 1.5, 4.0)
+			if int(reg.get("n", 0)) == 1:
+				draw_circle(pos, size, Color("#23405e"))
+				draw_arc(pos, size, 0.0, TAU, 8, Color("#cfe0f2"), 0.5, true)
+			else:
+				draw_rect(Rect2(pos - Vector2(size, size * 0.8), Vector2(size * 2.0, size * 1.6)), color.darkened(0.2), true)
+				draw_rect(Rect2(pos - Vector2(size, size * 0.8), Vector2(size * 2.0, size * 1.6)), Color(0, 0, 0, 0.6), false, 0.4, true)
+
+
+func _draw_emblems() -> void:
+	var pack: FmgGraph = sim.pack
+	for state in pack.states:
+		if state == null or int(state.get("i", 0)) == 0 or not state.has("co"):
+			continue
+		if not sim.poles_cache.has(state["i"]):
+			continue
+		var pole: Vector2 = sim.poles_cache[state["i"]]
+		var cells: int = state.get("cells", 10)
+		var label_size: float = clampf(sqrt(float(cells)) * 2.2, 9.0, 34.0)
+		var pos: Vector2 = pole + Vector2(0.0, label_size * 1.1)
+		_draw_shield(state["co"], pos, clampf(label_size * 0.55, 6.0, 18.0))
+
+
+func _draw_shield(coa: Dictionary, pos: Vector2, size: float) -> void:
+	var t1: Color = Color.html(FmgEmblems.TINCTURE_COLORS.get(coa.get("t1", "argent"), "#fafafa"))
+	var w: float = size * 0.8
+	var h: float = size
+	# heater shield outline
+	var outline := PackedVector2Array([
+		pos + Vector2(-w, -h * 0.55), pos + Vector2(w, -h * 0.55),
+		pos + Vector2(w, h * 0.1), pos + Vector2(0.0, h * 0.6), pos + Vector2(-w, h * 0.1)
+	])
+	draw_colored_polygon(outline, t1)
+	var division: Dictionary = coa.get("division", {})
+	if not division.is_empty():
+		var t2: Color = Color.html(FmgEmblems.TINCTURE_COLORS.get(division.get("t", "gules"), "#d7374a"))
+		var div_type: String = division.get("division", "")
+		var half := PackedVector2Array()
+		match div_type:
+			"perPale":
+				half = PackedVector2Array([pos + Vector2(0, -h * 0.55), pos + Vector2(w, -h * 0.55), pos + Vector2(w, h * 0.1), pos + Vector2(0, h * 0.6)])
+			"perFess":
+				half = PackedVector2Array([pos + Vector2(-w, 0.0), pos + Vector2(w, 0.0), pos + Vector2(w, h * 0.1), pos + Vector2(0.0, h * 0.6), pos + Vector2(-w, h * 0.1)])
+			"perBend":
+				half = PackedVector2Array([pos + Vector2(w, -h * 0.55), pos + Vector2(w, h * 0.1), pos + Vector2(0.0, h * 0.6), pos + Vector2(-w, -h * 0.55)])
+			"perChevron", "perChevronReversed":
+				half = PackedVector2Array([pos + Vector2(-w, h * 0.1), pos + Vector2(0.0, -h * 0.1), pos + Vector2(w, h * 0.1), pos + Vector2(0.0, h * 0.6)])
+			"perCross":
+				draw_rect(Rect2(pos + Vector2(0.0, -h * 0.55), Vector2(w, h * 0.55)), t2, true)
+				draw_rect(Rect2(pos + Vector2(-w, 0.0), Vector2(w, h * 0.6)), t2, true)
+			_:
+				half = PackedVector2Array([pos + Vector2(0, -h * 0.55), pos + Vector2(w, -h * 0.55), pos + Vector2(w, h * 0.1), pos + Vector2(0, h * 0.6)])
+		if half.size() >= 3:
+			draw_colored_polygon(half, t2)
+	var ordinaries: Array = coa.get("ordinaries", [])
+	if not ordinaries.is_empty():
+		var ord: Dictionary = ordinaries[0]
+		var t_ord: Color = Color.html(FmgEmblems.TINCTURE_COLORS.get(ord.get("t", "gules"), "#d7374a"))
+		match ord.get("ordinary", ""):
+			"fess":
+				draw_rect(Rect2(pos + Vector2(-w, -h * 0.18), Vector2(w * 2.0, h * 0.36)), t_ord, true)
+			"pale":
+				draw_rect(Rect2(pos + Vector2(-w * 0.25, -h * 0.55), Vector2(w * 0.5, h * 1.1)), t_ord, true)
+			"bend":
+				draw_line(pos + Vector2(-w, -h * 0.55), pos + Vector2(w, h * 0.3), t_ord, size * 0.2, true)
+			"cross":
+				draw_rect(Rect2(pos + Vector2(-w * 0.15, -h * 0.55), Vector2(w * 0.3, h * 1.1)), t_ord, true)
+				draw_rect(Rect2(pos + Vector2(-w, -h * 0.15), Vector2(w * 2.0, h * 0.3)), t_ord, true)
+			"chief":
+				draw_rect(Rect2(pos + Vector2(-w, -h * 0.55), Vector2(w * 2.0, h * 0.3)), t_ord, true)
+	var charges: Array = coa.get("charges", [])
+	if not charges.is_empty():
+		var charge: Dictionary = charges[0]
+		var tc: Color = Color.html(FmgEmblems.TINCTURE_COLORS.get(charge.get("t", "sable"), "#333333"))
+		_draw_charge(charge.get("charge", ""), pos, size * 0.3, tc)
+	var closed := PackedVector2Array(outline)
+	closed.append(outline[0])
+	draw_polyline(closed, Color(0.1, 0.1, 0.1, 0.8), size * 0.06, true)
+
+
+func _draw_charge(charge: String, pos: Vector2, r: float, color: Color) -> void:
+	match charge:
+		"Star", "Sun":
+			var pts := PackedVector2Array()
+			for k: int in 10:
+				var angle: float = float(k) * TAU / 10.0 - PI / 2.0
+				var radius: float = r if k % 2 == 0 else r * 0.45
+				pts.append(pos + Vector2(cos(angle), sin(angle)) * radius)
+			draw_colored_polygon(pts, color)
+		"Moon":
+			draw_circle(pos, r * 0.8, color)
+			draw_circle(pos + Vector2(r * 0.4, -r * 0.2), r * 0.7, Color(0, 0, 0, 0))
+		"Cross":
+			draw_rect(Rect2(pos + Vector2(-r * 0.25, -r), Vector2(r * 0.5, r * 2.0)), color, true)
+			draw_rect(Rect2(pos + Vector2(-r, -r * 0.25), Vector2(r * 2.0, r * 0.5)), color, true)
+		"Tower", "Castle":
+			draw_rect(Rect2(pos + Vector2(-r * 0.6, -r * 0.4), Vector2(r * 1.2, r * 1.2)), color, true)
+			draw_rect(Rect2(pos + Vector2(-r * 0.6, -r * 0.8), Vector2(r * 0.3, r * 0.4)), color, true)
+			draw_rect(Rect2(pos + Vector2(r * 0.3, -r * 0.8), Vector2(r * 0.3, r * 0.4)), color, true)
+		"Crown":
+			var pts := PackedVector2Array([
+				pos + Vector2(-r, r * 0.5), pos + Vector2(-r, -r * 0.2), pos + Vector2(-r * 0.4, r * 0.1),
+				pos + Vector2(0.0, -r * 0.6), pos + Vector2(r * 0.4, r * 0.1), pos + Vector2(r, -r * 0.2),
+				pos + Vector2(r, r * 0.5)
+			])
+			draw_colored_polygon(pts, color)
+		"Sword", "Axe", "Key":
+			draw_line(pos + Vector2(0, -r), pos + Vector2(0, r), color, r * 0.3, true)
+			draw_line(pos + Vector2(-r * 0.5, -r * 0.4), pos + Vector2(r * 0.5, -r * 0.4), color, r * 0.3, true)
+		_:
+			draw_circle(pos, r * 0.55, color)
+
+
+func _draw_relief_icons() -> void:
+	var mountain := Color(0.35, 0.3, 0.25, 0.55)
+	for p: Vector2 in _mountain_points:
+		var pts := PackedVector2Array([p + Vector2(-2.6, 1.6), p + Vector2(0, -2.6), p + Vector2(2.6, 1.6)])
+		draw_polyline(PackedVector2Array([pts[0], pts[1], pts[2]]), mountain, 0.7, true)
+	var tree := Color(0.15, 0.35, 0.15, 0.5)
+	for p: Vector2 in _tree_points:
+		draw_line(p + Vector2(0, 1.4), p + Vector2(0, 0.2), tree, 0.6, true)
+		var pts := PackedVector2Array([p + Vector2(-1.3, 0.6), p + Vector2(0, -1.8), p + Vector2(1.3, 0.6)])
+		draw_colored_polygon(pts, tree)
+
+
+func _draw_feature_labels() -> void:
+	for label: Dictionary in _feature_labels:
+		var name_v: String = label["name"]
+		var pos: Vector2 = label["pos"]
+		var font_size: int = int(label["size"])
+		var color: Color = label["color"]
+		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		var start := pos + Vector2(-width / 2.0, font_size * 0.35)
+		var out_col: Color = Color(0.1, 0.15, 0.2, 0.55) if label["type"] == "island" else Color(0.05, 0.1, 0.2, 0.4)
+		draw_string_outline(_font, start, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 3, out_col)
+		draw_string(_font, start, name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
+
+
+func _draw_province_labels() -> void:
+	var pack: FmgGraph = sim.pack
+	for province in pack.provinces:
+		if province == null:
+			continue
+		var burg_id: int = int(province.get("burg", 0))
+		if burg_id <= 0 or burg_id >= pack.burgs.size() or pack.burgs[burg_id] == null:
+			continue
+		var burg: Dictionary = pack.burgs[burg_id]
+		var pos := Vector2(burg["x"], burg["y"]) + Vector2(0.0, 8.0)
+		var name_v: String = province.get("fullName", province.get("name", ""))
+		draw_string_outline(_font, pos, name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, 5, 2, COL_TEXT_OUT)
+		draw_string(_font, pos, name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, 5, Color(0.2, 0.2, 0.3, 0.8))
