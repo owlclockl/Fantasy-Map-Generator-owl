@@ -28,9 +28,9 @@ static func get_offset(flux: float, point_index: int, width_factor: float, start
 	if point_index == 0:
 		return starting_width
 	var flux_width: float = minf(pow(flux, 0.7) / FLUX_FACTOR, MAX_FLUX_WIDTH)
+	# upstream: LENGTH_PROGRESSION = [1,1,2,3,5,8,13,21,34].map(n => n / LENGTH_FACTOR)
 	var progression: Array = [1.0, 1.0, 2.0, 3.0, 5.0, 8.0, 13.0, 21.0, 34.0]
-	var progression_last: float = 34.0
-	var progression_value: float = progression[point_index] if point_index < progression.size() else progression_last
+	var progression_value: float = (progression[point_index] if point_index < progression.size() else 34.0) / LENGTH_FACTOR
 	var length_width: float = point_index / LENGTH_FACTOR + progression_value
 	return width_factor * (length_width + flux_width) + starting_width
 
@@ -560,9 +560,14 @@ func _calculate_confluence_flux(h: PackedFloat32Array) -> void:
 
 # --- river polygon building for rendering ---
 
-## getRiverPath port: build the tapered polygon of a river from its cells
-func get_river_polygon(river: Dictionary) -> PackedVector2Array:
+## Meandered centerline of a river with a per-point half-width (offset).
+## Shared by the ribbon builder and the tapered-stroke renderer: ribbons whose
+## meander loops self-intersect cannot be triangulated, so the renderer falls
+## back to stroking the centerline with these widths.
+func _river_offset_path(river: Dictionary) -> Dictionary:
 	var river_cells: PackedInt32Array = river["cells"]
+	if river_cells.size() < 2:
+		return {}
 	var start_step: int = 1 if pack.h[river_cells[0]] < SEA_LEVEL else 10
 	var is_water_cell: Array = []
 	for c: int in river_cells:
@@ -582,18 +587,46 @@ func get_river_polygon(river: Dictionary) -> PackedVector2Array:
 
 	var width_factor: float = river["widthFactor"]
 	var starting_width: float = river["sourceWidth"]
+	var offsets := PackedFloat32Array()
+	offsets.resize(points.size())
+	var flux_acc: float = 0.0
+	var n: int = points.size()
+	for point_index: int in n:
+		flux_acc = maxf(flux_acc, flux[point_index])
+		offsets[point_index] = get_offset(flux_acc, point_index, width_factor, starting_width)
+	return {"points": points, "offsets": offsets}
+
+
+## Centerline + full widths (diameters) for tapered stroke rendering.
+func get_river_stroke(river: Dictionary) -> Dictionary:
+	var path: Dictionary = _river_offset_path(river)
+	if path.is_empty():
+		return {}
+	var offsets: PackedFloat32Array = path["offsets"]
+	var widths := PackedFloat32Array()
+	widths.resize(offsets.size())
+	for i: int in offsets.size():
+		widths[i] = offsets[i] * 2.0
+	return {"points": path["points"], "widths": widths}
+
+
+## getRiverPath port: build the tapered polygon of a river from its cells
+func get_river_polygon(river: Dictionary) -> PackedVector2Array:
+	var path: Dictionary = _river_offset_path(river)
+	if path.is_empty():
+		return PackedVector2Array()
+	var points: PackedVector2Array = path["points"]
+	var offsets: PackedFloat32Array = path["offsets"]
 	var left := PackedVector2Array()
 	var right := PackedVector2Array()
-	var flux_acc: float = 0.0
 	var n: int = points.size()
 
 	for point_index: int in n:
 		var p_prev: Vector2 = points[point_index - 1] if point_index > 0 else points[point_index]
 		var p_cur: Vector2 = points[point_index]
 		var p_next: Vector2 = points[point_index + 1] if point_index < n - 1 else points[point_index]
-		flux_acc = maxf(flux_acc, flux[point_index])
 
-		var offset: float = get_offset(flux_acc, point_index, width_factor, starting_width)
+		var offset: float = offsets[point_index]
 		var angle: float = atan2(p_prev.y - p_next.y, p_prev.x - p_next.x)
 		var sin_offset: float = sin(angle) * offset
 		var cos_offset: float = cos(angle) * offset

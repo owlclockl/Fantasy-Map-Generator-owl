@@ -1,36 +1,19 @@
 extends Node2D
-## Main orchestrator: builds the UI, runs the generation pipeline in a worker
-## thread (keeping the UI responsive), handles the heightmap brush, save/load
-## and export.
+## Main orchestrator: builds the FMG-style UI (menu, overviews, loading
+## overlay), runs the generation pipeline in a worker thread (keeping the UI
+## responsive), handles the heightmap brush, the ruler tool, save/load and
+## export.
 
 var sim: FmgSim = null # Sim autoload
 var view: MapView = null
 var camera: MapCamera = null
+var ui_theme: FmgUiTheme = null
+var menu: FmgMainMenu = null
+var overviews: FmgOverviewDialogs = null
 
-# UI references
-var status_label: Label = null
-var progress_bar: ProgressBar = null
-var seed_edit: LineEdit = null
-var template_option: OptionButton = null
-var density_option: OptionButton = null
-var cultures_spin: SpinBox = null
-var cultures_set_option: OptionButton = null
-var states_spin: SpinBox = null
-var religions_spin: SpinBox = null
-var provinces_ratio_spin: SpinBox = null
-var burgs_check: CheckButton = null
-var climate_equator_spin: SpinBox = null
-var climate_north_spin: SpinBox = null
-var climate_south_spin: SpinBox = null
-var climate_precip_spin: SpinBox = null
-var wind_spins: Array = []
-var generate_button: Button = null
-var brush_option: OptionButton = null
-var brush_size: HSlider = null
-var layer_checks: Dictionary = {}
-var menu_root: VBoxContainer = null
 var _generation_thread: Thread = null
 var _generation_worker: FmgGenerationWorker = null
+var _preview_output: String = "" # --preview <path>: software-render a PNG after generation
 
 # brush state
 var brush_active: bool = false
@@ -38,9 +21,6 @@ var brush_world_pos := Vector2.ZERO
 var _brush_down: bool = false
 var _space_held: bool = false
 var _generating: bool = false
-
-const DENSITIES := [[1, "1 000"], [2, "2 000"], [3, "5 000"], [4, "10 000"], [5, "20 000"]]
-const POINTS_BY_DENSITY := {1: 1000, 2: 2000, 3: 5000, 4: 10000, 5: 20000}
 
 
 func _ready() -> void:
@@ -56,10 +36,28 @@ func _ready() -> void:
 
 	_build_ui()
 
+	var user_args := OS.get_cmdline_user_args()
+	var preview_index: int = user_args.find("--preview")
+	if preview_index >= 0 and preview_index + 1 < user_args.size():
+		_preview_output = user_args[preview_index + 1]
+
 	if DisplayServer.get_name() == "headless":
-		_run_headless_smoke()
+		if not _preview_output.is_empty():
+			_run_headless_preview()
+		else:
+			_run_headless_smoke()
 	else:
-		_on_generate_pressed.call_deferred()
+		_on_generate_requested.call_deferred()
+
+
+## `godot --headless . -- --preview out.png` — generate and software-render
+## the map to a PNG without any GPU (CI / server usage).
+func _run_headless_preview() -> void:
+	print("[preview] generating for ", _preview_output)
+	# _finish_generation_result saves the PNG once the map is ready
+	await run_generation(true)
+	print("[preview] OK")
+	get_tree().quit(0)
 
 
 func _run_headless_smoke() -> void:
@@ -68,11 +66,29 @@ func _run_headless_smoke() -> void:
 	print("[smoke] stats: ", sim.get_stats_text())
 	print("[smoke] states: ", _collect_state_names())
 	print("[smoke] manufactured records: ", _count_manufacturing())
+	# UI smoke: menu built, every tab selectable, overview tables populated
+	_ui_smoke()
+	# render smoke: enable every layer and force the draw path
+	for property: Dictionary in view.get_property_list():
+		var prop_name: String = str(property.get("name", ""))
+		if prop_name.begins_with("show_") and view.get(prop_name) is bool:
+			view.set(prop_name, true)
+	view.ruler_points = PackedVector2Array([Vector2(100, 100), Vector2(400, 300), Vector2(600, 500)])
+	# a manual NOTIFICATION_DRAW runs the whole _draw path even headlessly
+	view.notification(CanvasItem.NOTIFICATION_DRAW)
+	print("[smoke] draw path exercised")
+	# software-rendered previews of the default (political) and biome views
+	menu.apply_preset("political")
+	await _save_preview("/tmp/fmg_smoke_preview_political.png", true)
+	menu.apply_preset("biomes")
+	view.show_relief = true
+	view.show_relief_icons = true
+	await _save_preview("/tmp/fmg_smoke_preview_biomes.png", true)
 	# export paths
 	_export_heightmap("/tmp/fmg_smoke_height.png")
-	print("[smoke] heightmap -> ", status_label.text)
+	print("[smoke] heightmap -> ", menu.status_label.text)
 	_export_geojson("/tmp/fmg_smoke.geojson")
-	print("[smoke] geojson -> ", status_label.text)
+	print("[smoke] geojson -> ", menu.status_label.text)
 	# save + load roundtrip
 	var err: Error = sim.save_map("/tmp/fmg_smoke_test.map")
 	print("[smoke] save_map -> ", error_string(err))
@@ -80,8 +96,32 @@ func _run_headless_smoke() -> void:
 	print("[smoke] load_map -> ", error_string(err))
 	print("[smoke] manufactured after load: ", _count_manufacturing())
 	view.rebuild_cache()
+	view.notification(CanvasItem.NOTIFICATION_DRAW)
 	print("[smoke] OK")
 	get_tree().quit(0)
+
+
+## Verifies the menu tree: tabs switch, layer buttons match the view state,
+## presets apply and overview windows build their tables.
+func _ui_smoke() -> void:
+	var issues: int = 0
+	for tab_id: String in FmgMainMenu.TAB_IDS:
+		menu.select_tab(tab_id)
+	for preset_id: String in FmgMainMenu.PRESETS.keys():
+		menu.apply_preset(preset_id)
+	menu.apply_preset("political")
+	for kind: String in ["burgs", "states", "rivers", "markers", "markets", "diplomacy"]:
+		overviews.open(kind)
+		if not overviews.is_open():
+			issues += 1
+			print("[smoke] overview failed: ", kind)
+		overviews.close_window()
+	menu.handle_layer_key(KEY_B) # toggle biomes via hotkey path
+	if not view.show_biomes:
+		issues += 1
+		print("[smoke] layer hotkey failed")
+	if issues == 0:
+		print("[smoke] UI tree OK (tabs, presets, overviews, hotkeys)")
 
 
 func _count_manufacturing() -> int:
@@ -89,6 +129,25 @@ func _count_manufacturing() -> int:
 	for m in sim.pack.markets:
 		total += ((m as Dictionary).get("manufacturing", []) as Array).size()
 	return total
+
+
+## Software-renders the current map state to a PNG (no GPU required).
+func _save_preview(path: String, restore_layers: bool = false) -> void:
+	if sim.pack == null:
+		return
+	var snapshot: Dictionary = {}
+	if restore_layers:
+		for property: Dictionary in view.get_property_list():
+			var prop_name: String = str(property.get("name", ""))
+			if prop_name.begins_with("show_") and view.get(prop_name) is bool:
+				snapshot[prop_name] = view.get(prop_name)
+	var preview: Image = FmgSoftwareRender.render_map(view, int(sim.map_width), int(sim.map_height))
+	var err: Error = preview.save_png(path)
+	print("[preview] ", path, " -> ", error_string(err))
+	if restore_layers:
+		for prop_name: String in snapshot:
+			view.set(prop_name, snapshot[prop_name])
+		view.queue_redraw()
 
 
 func _collect_state_names() -> String:
@@ -102,38 +161,25 @@ func _collect_state_names() -> String:
 # ---------------------------------------------------------------------------
 # Generation
 
-func _on_generate_pressed() -> void:
+func _on_generate_requested() -> void:
 	if _generating:
 		return
-	sim.seed_value = seed_edit.text.strip_edges()
-	if sim.seed_value.is_empty():
-		sim.seed_value = str(randi() % 1000000000)
-		seed_edit.text = sim.seed_value
-	sim.template_id = _current_template_id()
-	sim.cells_desired = POINTS_BY_DENSITY[density_option.get_selected_id()]
-	sim.cultures_limit = int(cultures_spin.value)
-	sim.cultures_set = str(cultures_set_option.get_selected_metadata()) if cultures_set_option != null else sim.cultures_set
-	sim.states_limit = int(states_spin.value)
-	sim.religions_limit = int(religions_spin.value)
-	sim.provinces_ratio = float(provinces_ratio_spin.value)
-	sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
-	sim.poles_cache = {}
+	if menu != null:
+		menu.apply_generation_options()
 	run_generation(false)
-
-
-func _current_template_id() -> String:
-	var id: String = template_option.get_item_metadata(template_option.selected)
-	return id if id != null else "random"
 
 
 func run_generation(silent: bool = false) -> void:
 	if _generating:
 		return
 	_generating = true
-	_set_menu_busy(true)
+	if menu != null:
+		menu.set_busy(true)
+		menu.close_popups()
+		menu.show_loading(true)
 	view.visible = false
-	progress_bar.show()
-	status_label.text = "Генерация запускается в фоновом потоке…"
+	menu.show_progress(true)
+	menu.set_status("Генерация запускается в фоновом потоке…")
 
 	# Use the live Sim instance so the existing Names autoload and all
 	# generators continue to share the same context. The map view is hidden
@@ -158,23 +204,20 @@ func _regenerate_after_edit() -> void:
 	_start_pipeline_tail("heightmap", "Пересчёт")
 
 
-func _on_climate_apply_pressed() -> void:
+func _on_climate_apply_requested() -> void:
 	if _generating or sim.grid == null:
 		return
 	_start_pipeline_tail("climate", "Климат")
 
 
-func _on_wind_changed(value: float, index: int) -> void:
-	if index >= 0 and index < sim.climate_winds.size():
-		sim.climate_winds[index] = value
-
-
 func _start_pipeline_tail(tail: String, verb: String) -> void:
 	_generating = true
-	_set_menu_busy(true)
+	if menu != null:
+		menu.set_busy(true)
+		menu.close_popups()
 	view.visible = false
-	progress_bar.show()
-	status_label.text = "%s запускается в фоновом потоке…" % verb
+	menu.show_progress(true)
+	menu.set_status("%s запускается в фоновом потоке…" % verb)
 	_generation_worker = FmgGenerationWorker.new({}, sim, tail)
 	_generation_thread = Thread.new()
 	var start_error: Error = _generation_thread.start(_generation_worker.run, Thread.PRIORITY_NORMAL)
@@ -194,8 +237,10 @@ func _wait_for_generation_result(silent: bool, verb: String) -> void:
 		var progress: Dictionary = _generation_worker.get_progress()
 		var total: int = maxi(int(progress.get("total", 1)), 1)
 		var index: int = int(progress.get("index", 0))
-		status_label.text = "%s: %s…" % [verb, progress.get("name", "Подготовка")]
-		progress_bar.value = clampf(float(index) / float(total), 0.0, 0.99)
+		var stage: String = "%s: %s…" % [verb, progress.get("name", "Подготовка")]
+		menu.set_status(stage)
+		menu.set_loading_stage(stage, float(index) / float(total))
+		menu.set_progress(clampf(float(index) / float(total), 0.0, 0.99))
 		await get_tree().process_frame
 
 	if _generation_thread == null:
@@ -206,20 +251,22 @@ func _wait_for_generation_result(silent: bool, verb: String) -> void:
 	if result is FmgSim:
 		_finish_generation_result(result as FmgSim, silent, verb)
 	else:
-		status_label.text = "%s: поток завершился без результата" % verb
+		menu.set_status("%s: поток завершился без результата" % verb)
 		view.visible = true
 		_generating = false
-		_set_menu_busy(false)
-		progress_bar.hide()
+		menu.set_busy(false)
+		menu.show_loading(false)
+		menu.show_progress(false)
 
 
 func _finish_generation_result(result: FmgSim, silent: bool, verb: String) -> void:
 	if result == null:
-		status_label.text = "%s: не удалось получить результат" % verb
+		menu.set_status("%s: не удалось получить результат" % verb)
 		view.visible = true
 		_generating = false
-		_set_menu_busy(false)
-		progress_bar.hide()
+		menu.set_busy(false)
+		menu.show_loading(false)
+		menu.show_progress(false)
 		return
 	if result != sim:
 		sim.adopt_generation(result)
@@ -227,88 +274,30 @@ func _finish_generation_result(result: FmgSim, silent: bool, verb: String) -> vo
 	# stopped touching the generated data.
 	sim.generation_time_ms = result.generation_time_ms
 	sim.map_generated.emit()
-	progress_bar.value = 1.0
-	progress_bar.hide()
+	menu.set_progress(1.0)
+	menu.show_progress(false)
+	menu.show_loading(false)
 	view.rebuild_cache()
 	view.visible = true
 	camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
-	status_label.text = sim.get_stats_text()
+	menu.set_status(sim.get_stats_text())
+	menu.refresh_from_sim()
 	_generating = false
-	_set_menu_busy(false)
-	if not silent:
-		generate_button.disabled = false
-
-
-## Enable/disable all interactive menu controls while a worker owns the
-## simulation. This prevents a climate edit or save action from racing the
-## generation thread.
-func _set_menu_busy(busy: bool) -> void:
-	if menu_root == null:
-		return
-	_set_menu_node_busy(menu_root, busy)
-
-
-func _set_menu_node_busy(node: Node, busy: bool) -> void:
-	if node is BaseButton:
-		(node as BaseButton).disabled = busy
-	elif node is LineEdit:
-		(node as LineEdit).editable = not busy
-	elif node is SpinBox:
-		(node as SpinBox).editable = not busy
-	elif node is Slider:
-		(node as Slider).editable = not busy
-	for child: Node in node.get_children():
-		_set_menu_node_busy(child, busy)
-
-
-## refreshes the climate controls from Sim (after a map load)
-func _refresh_climate_ui() -> void:
-	if climate_equator_spin == null:
-		return
-	climate_equator_spin.set_value_no_signal(sim.climate_equator)
-	climate_north_spin.set_value_no_signal(sim.climate_north_pole)
-	climate_south_spin.set_value_no_signal(sim.climate_south_pole)
-	climate_precip_spin.set_value_no_signal(sim.climate_precipitation)
-	for i: int in mini(wind_spins.size(), sim.climate_winds.size()):
-		(wind_spins[i] as SpinBox).set_value_no_signal(float(sim.climate_winds[i]))
-
-
-func _refresh_menu_from_sim() -> void:
-	if seed_edit != null:
-		seed_edit.text = sim.seed_value
-	if template_option != null:
-		for i: int in template_option.item_count:
-			if str(template_option.get_item_metadata(i)) == sim.template_id:
-				template_option.select(i)
-				break
-		if density_option != null:
-			for i: int in density_option.item_count:
-				var density_id: int = int(density_option.get_item_id(i))
-				if POINTS_BY_DENSITY.has(density_id) and POINTS_BY_DENSITY[density_id] == sim.cells_desired:
-					density_option.select(i)
-					break
-	if cultures_spin != null:
-		cultures_spin.set_value_no_signal(sim.cultures_limit)
-	if cultures_set_option != null:
-		for i: int in cultures_set_option.item_count:
-			if str(cultures_set_option.get_item_metadata(i)) == sim.cultures_set:
-				cultures_set_option.select(i)
-				break
-	if states_spin != null:
-		states_spin.set_value_no_signal(sim.states_limit)
-	if religions_spin != null:
-		religions_spin.set_value_no_signal(sim.religions_limit)
-	if provinces_ratio_spin != null:
-		provinces_ratio_spin.set_value_no_signal(sim.provinces_ratio)
-	if burgs_check != null:
-		burgs_check.button_pressed = sim.burgs_limit < 0
-	_refresh_climate_ui()
+	menu.set_busy(false)
+	if not _preview_output.is_empty():
+		_save_preview(_preview_output)
 
 
 # ---------------------------------------------------------------------------
-# Brush editing
+# Input: hotkeys, brush, ruler
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and not event.echo and event.pressed:
+		var handled: bool = _handle_hotkey((event as InputEventKey).keycode)
+		if handled:
+			get_viewport().set_input_as_handled()
+			return
+
 	if event is InputEventKey and not event.echo:
 		if event.keycode == KEY_SPACE:
 			_space_held = event.pressed
@@ -322,6 +311,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			else:
 				_regenerate_after_edit()
 			get_viewport().set_input_as_handled()
+		elif mb.button_index == MOUSE_BUTTON_LEFT and _ruler_active():
+			if mb.pressed:
+				view.ruler_points.append(get_global_mouse_position())
+				view.queue_redraw()
+			get_viewport().set_input_as_handled()
+		elif mb.button_index == MOUSE_BUTTON_RIGHT and _ruler_active():
+			view.ruler_points = PackedVector2Array()
+			view.queue_redraw()
+			get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseMotion and _brush_down:
 		var motion := event as InputEventMouseMotion
@@ -329,9 +327,44 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseMotion:
-		if brush_active:
+		if brush_active or _ruler_active():
 			brush_world_pos = get_global_mouse_position()
 			view.queue_redraw()
+
+
+func _ruler_active() -> bool:
+	return view.show_rulers and menu != null and menu.ruler_check != null and menu.ruler_check.button_pressed
+
+
+func _handle_hotkey(keycode: int) -> bool:
+	match keycode:
+		KEY_TAB:
+			menu.toggle_menu()
+			return true
+		KEY_F2:
+			_on_generate_requested()
+			return true
+		KEY_0:
+			camera.fit_to_map()
+			return true
+		KEY_ESCAPE:
+			if overviews.is_open():
+				overviews.close_window()
+				return true
+			if menu.export_popup.visible or menu.omnibar.visible:
+				menu.close_popups()
+				return true
+			if menu.is_menu_visible():
+				menu.hide_menu()
+				return true
+			return false
+		KEY_SPACE:
+			# omnibar search, like the original
+			menu.open_omnibar()
+			return true
+	if menu.handle_layer_key(keycode):
+		return true
+	return false
 
 
 func _apply_brush(_screen_pos: Vector2) -> void:
@@ -341,9 +374,9 @@ func _apply_brush(_screen_pos: Vector2) -> void:
 	brush_world_pos = world
 	if sim.grid == null:
 		return
-	var radius: float = brush_size.value
+	var radius: float = menu.brush_size.value
 	var cells := sim.grid.find_all(world.x, world.y, radius)
-	var mode: int = brush_option.get_selected_id() # 0 raise, 1 lower, 2 smooth
+	var mode: int = menu.brush_option.get_selected_id() # 0 raise, 1 lower, 2 smooth
 	for cell: int in cells:
 		var p: Vector2 = sim.grid.points[cell]
 		var falloff: float = 1.0 - clampf(p.distance_to(world) / maxf(radius, 0.001), 0.0, 1.0)
@@ -369,7 +402,7 @@ func _apply_brush(_screen_pos: Vector2) -> void:
 # ---------------------------------------------------------------------------
 # Save / load / export
 
-func _on_save_pressed() -> void:
+func _on_save_requested() -> void:
 	var dialog := FileDialog.new()
 	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -378,13 +411,13 @@ func _on_save_pressed() -> void:
 	add_child(dialog)
 	dialog.file_selected.connect(func(path: String) -> void:
 		var err: Error = sim.save_map(path)
-		status_label.text = "Сохранено: %s (%s)" % [path, error_string(err)]
+		menu.set_status("Сохранено: %s (%s)" % [path, error_string(err)])
 		dialog.queue_free()
 	)
 	dialog.popup_centered(Vector2i(700, 500))
 
 
-func _on_load_pressed() -> void:
+func _on_load_requested() -> void:
 	var dialog := FileDialog.new()
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -393,17 +426,30 @@ func _on_load_pressed() -> void:
 	dialog.file_selected.connect(func(path: String) -> void:
 		var err: Error = sim.load_map(path)
 		if err == OK:
-			seed_edit.text = sim.seed_value
-			_refresh_menu_from_sim()
+			menu.refresh_from_sim()
 			view.rebuild_cache()
 			camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
-			status_label.text = "Загружено: %s" % path
+			menu.set_status("Загружено: %s" % path)
 			camera.fit_to_map()
 		else:
-			status_label.text = "Ошибка загрузки: %s" % error_string(err)
+			menu.set_status("Ошибка загрузки: %s" % error_string(err))
 		dialog.queue_free()
 	)
 	dialog.popup_centered(Vector2i(700, 500))
+
+
+func _on_export_requested(kind: String) -> void:
+	match kind:
+		"png":
+			_on_export_pressed()
+		"svg":
+			_export_dialog("svg", "SVG векторная карта")
+		"csv":
+			_export_dialog("csv", "CSV данные клеток")
+		"geojson":
+			_export_dialog("geojson", "GeoJSON геоданные")
+		"height":
+			_on_heightmap_pressed()
 
 
 func _on_export_pressed() -> void:
@@ -430,27 +476,27 @@ func _export_png(path: String) -> void:
 	add_child(sv)
 	var clone := MapView.new()
 	clone.sim = sim
-	clone.show_labels = view.show_labels
-	clone.show_politics = view.show_politics
-	clone.show_biomes = view.show_biomes
-	clone.show_heights = view.show_heights
-	clone.show_cultures = view.show_cultures
-	clone.show_religions = view.show_religions
-	clone.show_provinces = view.show_provinces
-	clone.show_rivers = view.show_rivers
-	clone.show_borders = view.show_borders
-	clone.show_burgs = view.show_burgs
-	clone.show_relief = view.show_relief
-	clone.show_ice = view.show_ice
-	clone.show_routes = view.show_routes
-	clone.show_feature_labels = view.show_feature_labels
-	clone.show_province_labels = view.show_province_labels
-	clone.show_markers = view.show_markers
-	clone.show_armies = view.show_armies
-	clone.show_zones = view.show_zones
-	clone.show_goods = view.show_goods
-	clone.show_emblems = view.show_emblems
-	clone.show_relief_icons = view.show_relief_icons
+	# Copy every layer toggle and style value, including future ones.
+	for property: Dictionary in view.get_property_list():
+		var name_v: String = str(property.get("name", ""))
+		if name_v.begins_with("show_") and view.get(name_v) is bool:
+			clone.set(name_v, view.get(name_v))
+	clone.style_ocean = view.style_ocean
+	clone.style_land = view.style_land
+	clone.style_lake = view.style_lake
+	clone.style_river = view.style_river
+	clone.style_coast = view.style_coast
+	clone.style_border = view.style_border
+	clone.style_road = view.style_road
+	clone.style_trail = view.style_trail
+	clone.style_searoute = view.style_searoute
+	clone.style_text = view.style_text
+	clone.style_ice = view.style_ice
+	clone.style_coast_width = view.style_coast_width
+	clone.style_border_width = view.style_border_width
+	clone.style_road_width = view.style_road_width
+	clone.style_label_scale = view.style_label_scale
+	clone.distance_scale = view.distance_scale
 	clone.rebuild_cache()
 	clone.scale = Vector2(scale_factor, scale_factor)
 	sv.add_child(clone)
@@ -458,7 +504,7 @@ func _export_png(path: String) -> void:
 	await RenderingServer.frame_post_draw
 	var img: Image = sv.get_texture().get_image()
 	img.save_png(path)
-	status_label.text = "Экспортировано: %s" % path
+	menu.set_status("Экспортировано: %s" % path)
 	sv.queue_free()
 
 
@@ -486,25 +532,25 @@ func _export_dialog(kind: String, description: String) -> void:
 func _export_svg(path: String) -> void:
 	var pack: FmgGraph = sim.pack
 	if pack == null:
-		status_label.text = "Нет данных для экспорта"
+		menu.set_status("Нет данных для экспорта")
 		return
 	var svg: Array = []
 	svg.append('<?xml version="1.0" encoding="UTF-8"?>')
 	svg.append('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">' % [
 		int(sim.map_width), int(sim.map_height), int(sim.map_width), int(sim.map_height)
 	])
-	svg.append('<rect width="100%%" height="100%%" fill="%s"/>' % "#466eab")
+	svg.append('<rect width="100%%" height="100%%" fill="%s"/>' % view.style_ocean.to_html(false))
 
 	# landmasses and lakes from the cached rings
 	view.rebuild_cache()
 	for ring: Dictionary in view._land_rings:
-		svg.append('<path d="%s" fill="%s" stroke="#33506d" stroke-width="1"/>' % [_path_d(ring["points"]), "#e6e2c8"])
+		svg.append('<path d="%s" fill="%s" stroke="%s" stroke-width="1"/>' % [_path_d(ring["points"]), view.style_land.to_html(false), view.style_coast.to_html(false)])
 	for ring: Dictionary in view._lake_rings:
-		svg.append('<path d="%s" fill="%s" stroke="#33506d" stroke-width="0.7"/>' % [_path_d(ring["points"]), "#5b83b8"])
+		svg.append('<path d="%s" fill="%s" stroke="%s" stroke-width="0.7"/>' % [_path_d(ring["points"]), view.style_lake.to_html(false), view.style_coast.to_html(false)])
 
 	# rivers
 	for entry: Dictionary in view._river_polys:
-		svg.append('<path d="%s Z" fill="%s"/>' % [_path_d(entry["points"]), "#5d99c6"])
+		svg.append('<path d="%s Z" fill="%s"/>' % [_path_d(entry["points"]), view.style_river.to_html(false)])
 
 	# borders
 	svg.append(_svg_borders(pack))
@@ -515,7 +561,7 @@ func _export_svg(path: String) -> void:
 		var points: PackedVector2Array = r.get("points", PackedVector2Array())
 		if points.size() < 2:
 			continue
-		var stroke: String = "#7a5c3e" if r.get("group", "") == "roads" else "#4a7ab5"
+		var stroke: String = view.style_searoute.to_html(false) if r.get("group", "") != "roads" else view.style_road.to_html(false)
 		var dash: String = ' stroke-dasharray="3 2"' if r.get("group", "") != "roads" else ""
 		svg.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="0.8"%s/>' % [_poly_pts(points), stroke, dash])
 
@@ -539,11 +585,11 @@ func _export_svg(path: String) -> void:
 
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
-		status_label.text = "Ошибка записи: %s" % error_string(FileAccess.get_open_error())
+		menu.set_status("Ошибка записи: %s" % error_string(FileAccess.get_open_error()))
 		return
 	f.store_string("\n".join(svg))
 	f.close()
-	status_label.text = "Экспортировано: %s" % path
+	menu.set_status("Экспортировано: %s" % path)
 
 
 func _path_d(points: PackedVector2Array) -> String:
@@ -586,7 +632,7 @@ func _svg_borders(pack: FmgGraph) -> String:
 				])
 	if segments.is_empty():
 		return ""
-	return '<path d="%s" stroke="#1a334d" stroke-width="1" stroke-opacity="0.65" fill="none"/>' % " ".join(segments)
+	return '<path d="%s" stroke="%s" stroke-width="1" stroke-opacity="0.65" fill="none"/>' % [" ".join(segments), view.style_border.to_html(false)]
 
 
 func _xml_escape(s: String) -> String:
@@ -612,12 +658,12 @@ func _on_heightmap_pressed() -> void:
 func _export_heightmap(path: String) -> void:
 	var grid: FmgGraph = sim.grid
 	if grid == null:
-		status_label.text = "Нет данных для экспорта"
+		menu.set_status("Нет данных для экспорта")
 		return
 	var width: int = int(sim.map_width)
 	var height: int = int(sim.map_height)
 	if width <= 0 or height <= 0 or grid.h.is_empty():
-		status_label.text = "Нет данных для экспорта"
+		menu.set_status("Нет данных для экспорта")
 		return
 	var data := PackedByteArray()
 	data.resize(width * height)
@@ -649,10 +695,10 @@ func _export_heightmap(path: String) -> void:
 			data[y * width + x] = clampi(int(round(float(grid.h[nearest]) * 2.55)), 0, 255)
 	var img := Image.create_from_data(width, height, false, Image.FORMAT_R8, data)
 	if img == null:
-		status_label.text = "Ошибка создания изображения"
+		menu.set_status("Ошибка создания изображения")
 		return
 	var err: Error = img.save_png(path)
-	status_label.text = ("Экспортировано: %s" % path) if err == OK else ("Ошибка записи: %s" % error_string(err))
+	menu.set_status(("Экспортировано: %s" % path) if err == OK else ("Ошибка записи: %s" % error_string(err)))
 
 
 ## GeoJSON export: pack cells as polygons with attributes, burgs as points,
@@ -661,7 +707,7 @@ func _export_heightmap(path: String) -> void:
 func _export_geojson(path: String) -> void:
 	var pack: FmgGraph = sim.pack
 	if pack == null:
-		status_label.text = "Нет данных для экспорта"
+		menu.set_status("Нет данных для экспорта")
 		return
 	var features: Array = []
 	for i: int in pack.cell_count():
@@ -695,11 +741,11 @@ func _export_geojson(path: String) -> void:
 		_json_escape(sim.seed_value), _json_escape(sim.template_id), int(sim.map_width), int(sim.map_height), pack.cell_count()]
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
-		status_label.text = "Ошибка записи: %s" % error_string(FileAccess.get_open_error())
+		menu.set_status("Ошибка записи: %s" % error_string(FileAccess.get_open_error()))
 		return
 	f.store_string(header + '"features":[' + ",".join(features) + "]}")
 	f.close()
-	status_label.text = "Экспортировано: %s" % path
+	menu.set_status("Экспортировано: %s" % path)
 
 
 func _geojson_cell_props(i: int) -> String:
@@ -751,11 +797,11 @@ func _json_escape(s: String) -> String:
 func _export_csv(path: String) -> void:
 	var pack: FmgGraph = sim.pack
 	if pack == null:
-		status_label.text = "Нет данных для экспорта"
+		menu.set_status("Нет данных для экспорта")
 		return
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
-		status_label.text = "Ошибка записи: %s" % error_string(FileAccess.get_open_error())
+		menu.set_status("Ошибка записи: %s" % error_string(FileAccess.get_open_error()))
 		return
 	f.store_line("id;x;y;height;biome;culture;state;province;religion;population;good;market;river;flux")
 	for i: int in pack.cell_count():
@@ -765,7 +811,7 @@ func _export_csv(path: String) -> void:
 			pack.pop[i], pack.good[i], pack.market[i], pack.r[i], pack.fl[i]
 		])
 	f.close()
-	status_label.text = "Экспортировано: %s" % path
+	menu.set_status("Экспортировано: %s" % path)
 
 
 # ---------------------------------------------------------------------------
@@ -776,391 +822,48 @@ func _build_ui() -> void:
 	layer.name = "UI"
 	add_child(layer)
 
-	# --- right sidebar ---
-	var panel := PanelContainer.new()
-	panel.name = "Sidebar"
-	panel.custom_minimum_size = Vector2(320, 0)
-	panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	panel.add_theme_constant_override("margin_left", 10)
-	panel.add_theme_constant_override("margin_right", 10)
-	panel.add_theme_constant_override("margin_top", 8)
-	panel.add_theme_constant_override("margin_bottom", 8)
-	layer.add_child(panel)
+	ui_theme = FmgUiTheme.new()
+	menu = FmgMainMenu.new()
+	menu.name = "MainMenu"
+	menu.setup(sim, view, ui_theme)
+	layer.add_child(menu)
 
-	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	panel.add_child(scroll)
+	overviews = FmgOverviewDialogs.new()
+	overviews.name = "Overviews"
+	overviews.setup(sim, view, ui_theme)
+	layer.add_child(overviews)
 
-	var vbox := VBoxContainer.new()
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vbox.add_theme_constant_override("separation", 8)
-	scroll.add_child(vbox)
-	menu_root = vbox
-
-	var title := Label.new()
-	title.text = "FANTASY MAP GENERATOR"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 17)
-	title.add_theme_color_override("font_color", Color("#e2bd5b"))
-	vbox.add_child(title)
-	var subtitle := Label.new()
-	subtitle.text = "Генератор миров · меню"
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.add_theme_font_size_override("font_size", 11)
-	subtitle.add_theme_color_override("font_color", Color("#9ba7b8"))
-	vbox.add_child(subtitle)
-	var search := LineEdit.new()
-	search.placeholder_text = "Поиск по меню…"
-	search.clear_button_enabled = true
-	search.tooltip_text = "Спрячет неподходящие параметры и слои"
-	search.text_changed.connect(func(query: String) -> void: _filter_menu(vbox, query))
-	vbox.add_child(search)
-
-	# --- map section ---
-	vbox.add_child(_make_header("Карта"))
-	seed_edit = LineEdit.new()
-	seed_edit.text = sim.seed_value
-	seed_edit.placeholder_text = "Сид карты"
-	vbox.add_child(_make_row("Сид", seed_edit))
-
-	var dice := Button.new()
-	dice.text = "Случайный сид"
-	dice.pressed.connect(func() -> void:
-		seed_edit.text = str(randi() % 1000000000)
-	)
-	vbox.add_child(dice)
-
-	template_option = OptionButton.new()
-	var templates: Array = HeightmapTemplates.TEMPLATES.keys()
-	template_option.add_item("Случайный", 0)
-	template_option.set_item_metadata(0, "random")
-	var t_index: int = 1
-	for tid: String in templates:
-		template_option.add_item(HeightmapTemplates.template_name(tid), t_index)
-		template_option.set_item_metadata(t_index, tid)
-		t_index += 1
-	template_option.select(1 + 3) # continents by default
-	vbox.add_child(_make_row("Шаблон", template_option))
-
-	density_option = OptionButton.new()
-	for d: Array in DENSITIES:
-		density_option.add_item("%s ячеек" % d[1], d[0])
-	density_option.select(3)
-	vbox.add_child(_make_row("Детализация", density_option))
-
-	cultures_spin = SpinBox.new()
-	cultures_spin.min_value = 1
-	cultures_spin.max_value = 32
-	cultures_spin.value = sim.cultures_limit
-	vbox.add_child(_make_row("Культур", cultures_spin))
-
-	cultures_set_option = OptionButton.new()
-	var set_index: int = 0
-	for set_id: String in FmgCultures.CULTURE_SETS:
-		var set_meta: Dictionary = FmgCultures.CULTURE_SETS[set_id]
-		cultures_set_option.add_item(str(set_meta["nameRu"]), set_index)
-		cultures_set_option.set_item_metadata(set_index, set_id)
-		if set_id == sim.cultures_set:
-			cultures_set_option.select(set_index)
-		set_index += 1
-	vbox.add_child(_make_row("Набор культур", cultures_set_option))
-
-	states_spin = SpinBox.new()
-	states_spin.min_value = 1
-	states_spin.max_value = 60
-	states_spin.value = sim.states_limit
-	vbox.add_child(_make_row("Государств", states_spin))
-
-	religions_spin = SpinBox.new()
-	religions_spin.min_value = 1
-	religions_spin.max_value = 24
-	religions_spin.value = sim.religions_limit
-	vbox.add_child(_make_row("Религий", religions_spin))
-
-	provinces_ratio_spin = SpinBox.new()
-	provinces_ratio_spin.min_value = 5.0
-	provinces_ratio_spin.max_value = 100.0
-	provinces_ratio_spin.step = 5.0
-	provinces_ratio_spin.value = sim.provinces_ratio
-	provinces_ratio_spin.tooltip_text = "Доля городов государства, ставших центрами провинций"
-	vbox.add_child(_make_row("Провинции %", provinces_ratio_spin))
-
-	burgs_check = CheckButton.new()
-	burgs_check.text = "Города: авто"
-	burgs_check.button_pressed = true
-	vbox.add_child(burgs_check)
-
-	# --- climate section (world configurator; values live in Sim) ---
-	vbox.add_child(_make_header("Климат"))
-	climate_equator_spin = _make_climate_spin(vbox, "Экватор °C", -10.0, 40.0, 0.5, sim.climate_equator, func(v: float) -> void: sim.climate_equator = v)
-	climate_north_spin = _make_climate_spin(vbox, "Сев. полюс °C", -60.0, 15.0, 0.5, sim.climate_north_pole, func(v: float) -> void: sim.climate_north_pole = v)
-	climate_south_spin = _make_climate_spin(vbox, "Юж. полюс °C", -60.0, 15.0, 0.5, sim.climate_south_pole, func(v: float) -> void: sim.climate_south_pole = v)
-	climate_precip_spin = _make_climate_spin(vbox, "Осадки %", 0.0, 400.0, 5.0, sim.climate_precipitation, func(v: float) -> void: sim.climate_precipitation = v)
-	wind_spins = []
-	var wind_names: Array = ["Ветер N пол.", "Ветер N умер.", "Ветер троп. N", "Ветер троп. S", "Ветер S умер.", "Ветер S пол."]
-	for i: int in 6:
-		var wind_spin := SpinBox.new()
-		wind_spin.min_value = 0.0
-		wind_spin.max_value = 360.0
-		wind_spin.step = 5.0
-		wind_spin.value = float(sim.climate_winds[i]) if i < sim.climate_winds.size() else 0.0
-		wind_spin.tooltip_text = "Направление преобладающего ветра пояса в градусах"
-		vbox.add_child(_make_row(wind_names[i], wind_spin))
-		wind_spin.value_changed.connect(_on_wind_changed.bind(i))
-		wind_spins.append(wind_spin)
-
-	var climate_btn := Button.new()
-	climate_btn.text = "Применить климат"
-	climate_btn.tooltip_text = "Пересчитать температуру, осадки и всё ниже по конвейеру"
-	climate_btn.pressed.connect(_on_climate_apply_pressed)
-	vbox.add_child(climate_btn)
-
-	var climate_hint := Label.new()
-	climate_hint.text = "Климат применяется кнопкой выше или при следующей генерации."
-	climate_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	climate_hint.add_theme_font_size_override("font_size", 11)
-	vbox.add_child(climate_hint)
-
-	generate_button = Button.new()
-	generate_button.text = "Сгенерировать карту"
-	generate_button.custom_minimum_size = Vector2(0, 40)
-	generate_button.pressed.connect(_on_generate_pressed)
-	vbox.add_child(generate_button)
-
-	# --- layers section ---
-	vbox.add_child(_make_header("Слои"))
-	_add_layer_check(vbox, "Политика", "politics", view.show_politics)
-	_add_layer_check(vbox, "Биомы", "biomes", view.show_biomes)
-	_add_layer_check(vbox, "Высоты", "heights", view.show_heights)
-	_add_layer_check(vbox, "Рельеф (затенение)", "relief", view.show_relief)
-	_add_layer_check(vbox, "Культуры", "cultures", view.show_cultures)
-	_add_layer_check(vbox, "Религии", "religions", view.show_religions)
-	_add_layer_check(vbox, "Провинции", "provinces", view.show_provinces)
-	_add_layer_check(vbox, "Реки", "rivers", view.show_rivers)
-	_add_layer_check(vbox, "Границы", "borders", view.show_borders)
-	_add_layer_check(vbox, "Города", "burgs", view.show_burgs)
-	_add_layer_check(vbox, "Подписи", "labels", view.show_labels)
-	_add_layer_check(vbox, "Лёд", "ice", view.show_ice)
-	_add_layer_check(vbox, "Дороги", "routes", view.show_routes)
-	_add_layer_check(vbox, "Подписи рельефа", "feature_labels", view.show_feature_labels)
-	_add_layer_check(vbox, "Подписи провинций", "province_labels", view.show_province_labels)
-	_add_layer_check(vbox, "Маркеры", "markers", view.show_markers)
-	_add_layer_check(vbox, "Армии", "armies", view.show_armies)
-	_add_layer_check(vbox, "Зоны", "zones", view.show_zones)
-	_add_layer_check(vbox, "Ресурсы", "goods", view.show_goods)
-	_add_layer_check(vbox, "Гербы", "emblems", view.show_emblems)
-	_add_layer_check(vbox, "Иконки рельефа", "relief_icons", view.show_relief_icons)
-
-	# --- tools section ---
-	vbox.add_child(_make_header("Инструменты"))
-	brush_option = OptionButton.new()
-	brush_option.add_item("Кисть: выключена", -1)
-	brush_option.add_item("Поднять рельеф", 0)
-	brush_option.add_item("Опустить рельеф", 1)
-	brush_option.add_item("Сгладить", 2)
-	brush_option.select(0)
-	vbox.add_child(_make_row("Кисть", brush_option))
-	brush_option.item_selected.connect(func(_i: int) -> void:
-		brush_active = brush_option.get_selected_id() >= 0
-		view.queue_redraw()
-	)
-
-	brush_size = HSlider.new()
-	brush_size.min_value = 10.0
-	brush_size.max_value = 150.0
-	brush_size.value = 45.0
-	vbox.add_child(_make_row("Размер кисти", brush_size))
-
-	var io_row := HBoxContainer.new()
-	io_row.add_theme_constant_override("separation", 4)
-	var save_btn := Button.new()
-	save_btn.text = "Сохранить"
-	save_btn.pressed.connect(_on_save_pressed)
-	var load_btn := Button.new()
-	load_btn.text = "Загрузить"
-	load_btn.pressed.connect(_on_load_pressed)
-	var png_btn := Button.new()
-	png_btn.text = "PNG"
-	png_btn.pressed.connect(_on_export_pressed)
-	var svg_btn := Button.new()
-	svg_btn.text = "SVG"
-	svg_btn.pressed.connect(func() -> void: _export_dialog("svg", "SVG векторная карта"))
-	var csv_btn := Button.new()
-	csv_btn.text = "CSV"
-	csv_btn.pressed.connect(func() -> void: _export_dialog("csv", "CSV данные клеток"))
-	io_row.add_child(save_btn)
-	io_row.add_child(load_btn)
-	io_row.add_child(png_btn)
-	vbox.add_child(io_row)
-	var io_row2 := HBoxContainer.new()
-	io_row2.add_theme_constant_override("separation", 4)
-	io_row2.add_child(svg_btn)
-	io_row2.add_child(csv_btn)
-	var height_btn := Button.new()
-	height_btn.text = "Высота"
-	height_btn.tooltip_text = "Экспорт высотной карты (grayscale PNG)"
-	height_btn.pressed.connect(_on_heightmap_pressed)
-	var geo_btn := Button.new()
-	geo_btn.text = "GeoJSON"
-	geo_btn.tooltip_text = "Экспорт клеток, городов и рек в GeoJSON"
-	geo_btn.pressed.connect(func() -> void: _export_dialog("geojson", "GeoJSON геоданные"))
-	io_row2.add_child(height_btn)
-	io_row2.add_child(geo_btn)
-	vbox.add_child(io_row2)
-
-	var hint := Label.new()
-	hint.text = "Колесо — зум, ПКМ/пробел+ЛКМ — панорама."
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_font_size_override("font_size", 11)
-	vbox.add_child(hint)
-
-	# --- status bar ---
-	var status_panel := PanelContainer.new()
-	status_panel.name = "StatusBar"
-	status_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	layer.add_child(status_panel)
-	var status_box := VBoxContainer.new()
-	status_panel.add_child(status_box)
-	status_label = Label.new()
-	status_label.text = "Готов к генерации"
-	status_box.add_child(status_label)
-	progress_bar = ProgressBar.new()
-	progress_bar.min_value = 0.0
-	progress_bar.max_value = 1.0
-	progress_bar.show_percentage = false
-	progress_bar.visible = false
-	progress_bar.custom_minimum_size = Vector2(0, 6)
-	status_box.add_child(progress_bar)
+	menu.generate_requested.connect(_on_generate_requested)
+	menu.save_requested.connect(_on_save_requested)
+	menu.load_requested.connect(_on_load_requested)
+	menu.export_requested.connect(_on_export_requested)
+	menu.fit_requested.connect(func() -> void: camera.fit_to_map())
+	menu.climate_apply_requested.connect(_on_climate_apply_requested)
+	menu.overview_requested.connect(func(kind: String) -> void: overviews.open(kind))
+	menu.brush_option.item_selected.connect(func(_i: int) -> void:
+		brush_active = menu.brush_option.get_selected_id() >= 0
+		view.queue_redraw())
 
 	camera.fit_to_map()
 
 
-func _make_header(text: String) -> Button:
-	var header := Button.new()
-	header.text = "▾  " + text
-	header.tooltip_text = "Свернуть или развернуть раздел"
-	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	header.toggle_mode = true
-	header.button_pressed = true
-	header.set_meta("menu_section_header", true)
-	header.set_meta("menu_section_title", text)
-	header.set_meta("menu_section_open", true)
-	header.custom_minimum_size = Vector2(0, 30)
-	header.add_theme_font_size_override("font_size", 15)
-	header.add_theme_color_override("font_color", Color("#c8a24a"))
-	header.toggled.connect(_on_section_toggled.bind(header))
-	return header
-
-
-func _on_section_toggled(open: bool, header: Button) -> void:
-	header.set_meta("menu_section_open", open)
-	header.text = ("▾  " if open else "▸  ") + str(header.get_meta("menu_section_title", "Раздел"))
-	var parent := header.get_parent()
-	if parent == null:
+func _process(_delta: float) -> void:
+	if menu == null or camera == null:
 		return
-	var index: int = header.get_index() + 1
-	while index < parent.get_child_count():
-		var child: Control = parent.get_child(index) as Control
-		if child != null and child.get_meta("menu_section_header", false):
-			break
-		if child != null:
-			child.visible = open
-		index += 1
-
-
-func _filter_menu(root: VBoxContainer, query: String) -> void:
-	var needle: String = query.strip_edges().to_lower()
-	var section_open: bool = true
-	for child_node: Node in root.get_children():
-		var child: Control = child_node as Control
-		if child == null:
-			continue
-		if child.get_meta("menu_section_header", false):
-			section_open = bool(child.get_meta("menu_section_open", true))
-			child.visible = true
-			continue
-		if child == root.get_child(0) or child == root.get_child(1) or child == root.get_child(2):
-			child.visible = true
-			continue
-		if needle.is_empty():
-			child.visible = section_open
-		else:
-			child.visible = _menu_text(child).to_lower().contains(needle)
-
-
-func _menu_text(node: Node) -> String:
-	var result: String = ""
-	if node is Label:
-		result += (node as Label).text
-	elif node is Button:
-		result += (node as Button).text
-	elif node is LineEdit:
-		result += (node as LineEdit).text + " " + (node as LineEdit).placeholder_text
-	elif node is OptionButton:
-		var option := node as OptionButton
-		for i: int in option.item_count:
-			result += " " + option.get_item_text(i)
-	elif node is SpinBox:
-		result += (node as SpinBox).tooltip_text
-	if node is Control:
-		result += " " + (node as Control).tooltip_text
-	for child: Node in node.get_children():
-		result += " " + _menu_text(child)
-	return result
-
-
-func _make_climate_spin(parent: Control, label_text: String, min_value: float, max_value: float, step: float, initial: float, on_change: Callable) -> SpinBox:
-	var spin := SpinBox.new()
-	spin.min_value = min_value
-	spin.max_value = max_value
-	spin.step = step
-	spin.value = initial
-	parent.add_child(_make_row(label_text, spin))
-	spin.value_changed.connect(func(v: float) -> void: on_change.call(v))
-	return spin
-
-
-func _make_row(label_text: String, control: Control) -> HBoxContainer:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
-	var label := Label.new()
-	label.text = label_text
-	label.custom_minimum_size = Vector2(105, 0)
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	row.add_child(label)
-	control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(control)
-	return row
-
-
-func _add_layer_check(parent: Control, text: String, key: String, initial: bool) -> void:
-	var check := CheckButton.new()
-	check.text = text
-	check.button_pressed = initial
-	parent.add_child(check)
-	layer_checks[key] = check
-	check.toggled.connect(func(pressed: bool) -> void:
-		match key:
-			"politics": view.show_politics = pressed
-			"biomes": view.show_biomes = pressed
-			"heights": view.show_heights = pressed
-			"relief": view.show_relief = pressed
-			"cultures": view.show_cultures = pressed
-			"religions": view.show_religions = pressed
-			"provinces": view.show_provinces = pressed
-			"rivers": view.show_rivers = pressed
-			"borders": view.show_borders = pressed
-			"burgs": view.show_burgs = pressed
-			"labels": view.show_labels = pressed
-			"ice": view.show_ice = pressed
-			"routes": view.show_routes = pressed
-			"feature_labels": view.show_feature_labels = pressed
-			"province_labels": view.show_province_labels = pressed
-			"markers": view.show_markers = pressed
-			"armies": view.show_armies = pressed
-			"zones": view.show_zones = pressed
-			"goods": view.show_goods = pressed
-			"emblems": view.show_emblems = pressed
-			"relief_icons": view.show_relief_icons = pressed
-		view.queue_redraw()
-	)
+	# tools claim the left mouse button; otherwise LMB drag pans like the original
+	camera.lmb_pan_enabled = not (brush_active or _ruler_active())
+	if view.visible and not _generating:
+		var zoom_percent: int = int(round(camera.zoom.x * 100.0))
+		var pointer: String = ""
+		var world := get_global_mouse_position()
+		if world.x >= 0.0 and world.y >= 0.0 and world.x <= sim.map_width and world.y <= sim.map_height:
+			pointer = "%.0f, %.0f" % [world.x, world.y]
+		menu.set_zoom_info(zoom_percent, pointer)
+		if brush_active:
+			view.brush_preview_visible = true
+			view.brush_preview_pos = world
+			view.brush_preview_radius = menu.brush_size.value
+			view.queue_redraw()
+		elif view.brush_preview_visible:
+			view.brush_preview_visible = false
+			view.queue_redraw()
