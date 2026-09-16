@@ -39,7 +39,7 @@ func _build(delaunay: Delaunator, _points_n_total: int, points_n: int) -> void:
 	cells.c.resize(points_n)
 	cells.b.resize(points_n)
 
-	var tri_count: int = triangles.size() / 3
+	var tri_count: int = floori(float(triangles.size()) / 3.0)
 	vertices.p.resize(tri_count)
 	vertices.v.resize(tri_count)
 	vertices.c.resize(tri_count)

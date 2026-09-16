@@ -106,8 +106,10 @@ func generate() -> void:
 	pack.route_links = route_links
 
 
-## is the cell touched by any route (markers isConnected)
-func is_connected(cell_id: int) -> bool:
+## is the cell touched by any route (markers isConnected).
+## Named is_on_route because Object.is_connected(StringName, Callable) is
+## reserved by the engine and cannot be overridden.
+func is_on_route(cell_id: int) -> bool:
 	return pack.cell_routes.has(cell_id) and not (pack.cell_routes[cell_id] as Dictionary).is_empty()
 
 
@@ -398,11 +400,11 @@ func _get_route_segments(path_cells: Array) -> Array:
 	for i: int in path_cells.size():
 		var cell_id: int = path_cells[i]
 		var next_cell: int = path_cells[i + 1] if i + 1 < path_cells.size() else -1
-		var is_connected: bool = false
+		var already_routed: bool = false
 		if next_cell >= 0:
-			is_connected = connections.has("%d-%d" % [cell_id, next_cell]) \
+			already_routed = connections.has("%d-%d" % [cell_id, next_cell]) \
 				or connections.has("%d-%d" % [next_cell, cell_id])
-		if is_connected:
+		if already_routed:
 			if not segment.is_empty():
 				segment.append(cell_id)
 				segments.append(segment)
