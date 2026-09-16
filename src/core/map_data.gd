@@ -72,6 +72,83 @@ func climate() -> FmgClimate:
 	return c
 
 
+## Options are copied before a worker starts. Keeping this as a plain
+## dictionary makes the worker independent from the SceneTree and avoids
+## reading controls while another thread is generating.
+func get_generation_options() -> Dictionary:
+	return {
+		"seed": seed_value,
+		"template": template_id,
+		"cellsDesired": cells_desired,
+		"mapWidth": map_width,
+		"mapHeight": map_height,
+		"climateEquator": climate_equator,
+		"climateNorthPole": climate_north_pole,
+		"climateSouthPole": climate_south_pole,
+		"climatePrecipitation": climate_precipitation,
+		"climateWinds": climate_winds.duplicate(),
+		"latN": lat_n,
+		"latS": lat_s,
+		"latT": lat_t,
+		"cultures": cultures_limit,
+		"culturesSet": cultures_set,
+		"states": states_limit,
+		"provincesRatio": provinces_ratio,
+		"burgs": burgs_limit,
+		"religions": religions_limit,
+		"sizeVariety": size_variety,
+		"growthRate": growth_rate,
+		"lakeElevationLimit": lake_elevation_limit,
+		"coastEnabled": coast_enabled,
+		"coastMaxDepth": coast_max_depth,
+		"coastAmplitude": coast_amplitude
+	}
+
+
+func apply_generation_options(options: Dictionary) -> void:
+	seed_value = str(options.get("seed", seed_value))
+	template_id = str(options.get("template", template_id))
+	cells_desired = int(options.get("cellsDesired", cells_desired))
+	map_width = float(options.get("mapWidth", map_width))
+	map_height = float(options.get("mapHeight", map_height))
+	climate_equator = float(options.get("climateEquator", climate_equator))
+	climate_north_pole = float(options.get("climateNorthPole", climate_north_pole))
+	climate_south_pole = float(options.get("climateSouthPole", climate_south_pole))
+	climate_precipitation = float(options.get("climatePrecipitation", climate_precipitation))
+	climate_winds = (options.get("climateWinds", climate_winds) as Array).duplicate()
+	lat_n = float(options.get("latN", lat_n))
+	lat_s = float(options.get("latS", lat_s))
+	lat_t = float(options.get("latT", lat_t))
+	cultures_limit = int(options.get("cultures", cultures_limit))
+	cultures_set = str(options.get("culturesSet", cultures_set))
+	states_limit = int(options.get("states", states_limit))
+	provinces_ratio = float(options.get("provincesRatio", provinces_ratio))
+	burgs_limit = int(options.get("burgs", burgs_limit))
+	religions_limit = int(options.get("religions", religions_limit))
+	size_variety = float(options.get("sizeVariety", size_variety))
+	growth_rate = float(options.get("growthRate", growth_rate))
+	lake_elevation_limit = int(options.get("lakeElevationLimit", lake_elevation_limit))
+	coast_enabled = bool(options.get("coastEnabled", coast_enabled))
+	coast_max_depth = int(options.get("coastMaxDepth", coast_max_depth))
+	coast_amplitude = float(options.get("coastAmplitude", coast_amplitude))
+
+
+## Move a completed worker result onto the main-thread singleton. The worker
+## creates all generated graphs independently, so this is only reference
+## assignment and does not duplicate the large cell arrays.
+func adopt_generation(other: FmgSim) -> void:
+	apply_generation_options(other.get_generation_options())
+	rng = other.rng
+	grid = other.grid
+	pack = other.pack
+	hydrology = other.hydrology
+	burgs = other.burgs
+	routes_gen = other.routes_gen
+	generation_time_ms = other.generation_time_ms
+	poles_cache = other.poles_cache
+	province_poles_cache = other.province_poles_cache
+
+
 ## The canonical pipeline: id + callable pairs, executed in order by main.gd
 func pipeline() -> Array:
 	rng = FmgRng.new(seed_value)

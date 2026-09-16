@@ -12,7 +12,7 @@ var map_rect := Rect2(0, 0, 1280, 800)
 # The map is shown below the right-hand controls and above the status bar.
 # Fitting against the full viewport made the last strip of the map disappear
 # beneath the sidebar and caused apparent jumps when a map was loaded.
-var reserved_right: float = 290.0
+var reserved_right: float = 340.0
 var reserved_bottom: float = 34.0
 
 
