@@ -1,6 +1,8 @@
 class_name MapCamera
 extends Camera2D
-## Pan (drag / middle / space) and zoom-to-cursor (wheel) camera.
+## Pan (drag / middle / right / space+LMB) and zoom-to-cursor (wheel) camera.
+## LMB drag pans the map like the original generator whenever no editing tool
+## (heightmap brush, ruler) is active; the orchestrator toggles that flag.
 
 var min_zoom: float = 0.4
 var max_zoom: float = 20.0
@@ -8,12 +10,12 @@ var _dragging: bool = false
 var _drag_button: int = -1
 var _space_held: bool = false
 var map_rect := Rect2(0, 0, 1280, 800)
+var lmb_pan_enabled: bool = true
 
-# The map is shown below the right-hand controls and above the status bar.
-# Fitting against the full viewport made the last strip of the map disappear
-# beneath the sidebar and caused apparent jumps when a map was loaded.
-var reserved_right: float = 340.0
-var reserved_bottom: float = 34.0
+# The FMG menu floats over the map (top-left), so the map can use the whole
+# window; only the slim status bar at the bottom is reserved.
+var reserved_right: float = 0.0
+var reserved_bottom: float = 30.0
 
 
 func _ready() -> void:
@@ -32,7 +34,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if mb.pressed and (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):
 			_zoom_at(mb.position, 1.12 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.12)
 			get_viewport().set_input_as_handled()
-		elif mb.button_index in [MOUSE_BUTTON_MIDDLE, MOUSE_BUTTON_RIGHT] or (_space_held and mb.button_index == MOUSE_BUTTON_LEFT):
+		elif mb.button_index in [MOUSE_BUTTON_MIDDLE, MOUSE_BUTTON_RIGHT] or ((_space_held or lmb_pan_enabled) and mb.button_index == MOUSE_BUTTON_LEFT):
 			_dragging = mb.pressed
 			_drag_button = mb.button_index
 			get_viewport().set_input_as_handled()

@@ -28,35 +28,72 @@ const HYPSO: Array = [
 
 var sim: FmgSim = null # Sim autoload
 
-# layer toggles
+# --- style (edited live from the Style tab; defaults follow the original) ---
+var style_ocean := COL_OCEAN
+var style_ocean_deep := COL_OCEAN_DEEP
+var style_ocean_outline := COL_OCEAN_OUTLINE
+var style_land := COL_LAND
+var style_lake := COL_LAKE
+var style_river := COL_RIVER
+var style_coast := COL_COAST
+var style_border := COL_BORDER
+var style_road := Color("#7a5c3e")
+var style_trail := Color("#8a7355")
+var style_searoute := Color("#4a7ab5")
+var style_text := COL_TEXT
+var style_ice := Color(0.94, 0.97, 1.0, 0.92)
+var style_coast_width := 1.0
+var style_border_width := 1.4
+var style_road_width := 1.1
+var style_label_scale := 1.0
+var distance_scale := 3.0 # kilometers per map pixel (Units ▸ distance scale)
+
+# layer toggles — defaults follow the original's "political" layers preset
 var show_politics: bool = true
-var show_biomes: bool = true
+var show_biomes: bool = false
 var show_heights: bool = false
 var show_cultures: bool = false
 var show_religions: bool = false
 var show_provinces: bool = false
 var show_rivers: bool = true
+var show_lakes: bool = true
 var show_borders: bool = true
 var show_labels: bool = true
 var show_burgs: bool = true
-var show_relief: bool = true # hillshading-ish height tint over biomes
+var show_relief: bool = false # hillshading-ish height tint over biomes
 var show_ice: bool = true
 var show_routes: bool = true
 var show_feature_labels: bool = true # oceans, seas, lakes, islands
 var show_province_labels: bool = false
-var show_markers: bool = true
+var show_markers: bool = false
 var show_armies: bool = false
 var show_zones: bool = false
 var show_goods: bool = false
 var show_emblems: bool = false
-var show_relief_icons: bool = true # mountain and forest glyphs
+var show_relief_icons: bool = false # mountain and forest glyphs
 var show_cell_borders: bool = false # debug
+# second data-contour layers (FMG parity)
+var show_temperature: bool = false
+var show_precipitation: bool = false
+var show_population: bool = false
+var show_markets: bool = false
+var show_trade: bool = false
+var show_journeys: bool = true
+# map furniture (FMG parity)
+var show_grid: bool = false
+var show_coordinates: bool = false
+var show_compass: bool = false
+var show_scale_bar: bool = true
+var show_vignette: bool = true
+var show_rulers: bool = false
+var ruler_points := PackedVector2Array()
 
 # cached geometry
 var _land_rings: Array = [] # {points, feature}
 var _lake_rings: Array = []
 var _ocean_rings: Array = [] # {t, rings}
-var _river_polys: Array = [] # {points, river}
+var _river_polys: Array = [] # {points, river} — ribbons that triangulate cleanly
+var _river_strokes: Array = [] # {points, widths} — self-intersecting ribbons, drawn as tapered strokes
 var _feature_labels: Array = [] # {name, pos, size, color}
 var _mountain_points: PackedVector2Array = PackedVector2Array()
 var _tree_points: PackedVector2Array = PackedVector2Array()
@@ -88,6 +125,15 @@ var _road_segments: PackedVector2Array = PackedVector2Array()
 var _trail_segments: PackedVector2Array = PackedVector2Array()
 var _journey_segments: PackedVector2Array = PackedVector2Array()
 
+# second-contour data layers (temperature, precipitation, population, markets)
+var _temperature_mesh: ArrayMesh = null
+var _precipitation_mesh: ArrayMesh = null
+var _population_mesh: ArrayMesh = null
+var _market_mesh: ArrayMesh = null
+var _market_centers: Array = [] # {pos, name, color, i}
+var _trade_segments: PackedVector2Array = PackedVector2Array()
+var _vignette_texture: Texture2D = null
+
 # Static geometry that used to be submitted once per island, river or glacier.
 # It is triangulated into a single mesh per visual layer without changing the
 # source polygons or their colors.
@@ -115,6 +161,7 @@ func rebuild_cache() -> void:
 	_lake_rings = []
 	_ocean_rings = []
 	_river_polys = []
+	_river_strokes = []
 	_feature_labels = []
 	_cell_polygons = []
 	_biome_mesh = null
@@ -136,6 +183,12 @@ func rebuild_cache() -> void:
 	_road_segments = PackedVector2Array()
 	_trail_segments = PackedVector2Array()
 	_journey_segments = PackedVector2Array()
+	_temperature_mesh = null
+	_precipitation_mesh = null
+	_population_mesh = null
+	_market_mesh = null
+	_market_centers = []
+	_trade_segments = PackedVector2Array()
 	_land_mesh = null
 	_lake_mesh = null
 	_river_mesh = null
@@ -198,8 +251,21 @@ func rebuild_cache() -> void:
 			if river == null:
 				continue
 			var poly := sim.hydrology.get_river_polygon(river)
-			if poly.size() >= 3:
+			if poly.size() < 3:
+				continue
+			# Self-intersecting meander loops cannot be triangulated; those
+			# rivers are rendered as tapered centerline strokes instead, so no
+			# river is ever silently dropped (upstream SVG fills tolerate the
+			# self-intersections, Godot meshes do not).
+			var probe := PackedVector2Array(poly)
+			if probe.size() > 1 and probe[0].distance_squared_to(probe[probe.size() - 1]) < 0.0001:
+				probe.remove_at(probe.size() - 1)
+			if Geometry2D.triangulate_polygon(probe).size() >= 3:
 				_river_polys.append({"points": poly, "river": river})
+			else:
+				var stroke: Dictionary = sim.hydrology.get_river_stroke(river)
+				if not stroke.is_empty():
+					_river_strokes.append(stroke)
 
 	# The rest of the render data is immutable until the next generation. Build
 	# it here rather than in _draw(), so toggling a layer only changes a single
@@ -208,6 +274,8 @@ func rebuild_cache() -> void:
 	_build_overlay_meshes()
 	_build_border_segments()
 	_build_route_segments()
+	_build_data_meshes()
+	_build_vignette_texture()
 
 	queue_redraw_all()
 
@@ -265,18 +333,20 @@ func _build_static_geometry() -> void:
 	for ring: Dictionary in _land_rings:
 		land_polygons.append(ring["points"])
 		_coast_segments.append_array(_closed_line_segments(ring["points"]))
-	_land_mesh = _polygon_mesh(land_polygons, COL_LAND)
+	# Baked white and tinted at draw time so the Style tab can recolor the
+	# basemap without a geometry rebuild.
+	_land_mesh = _polygon_mesh(land_polygons, Color.WHITE)
 
 	var lake_polygons: Array = []
 	for ring: Dictionary in _lake_rings:
 		lake_polygons.append(ring["points"])
 		_lake_shore_segments.append_array(_closed_line_segments(ring["points"]))
-	_lake_mesh = _polygon_mesh(lake_polygons, COL_LAKE)
+	_lake_mesh = _polygon_mesh(lake_polygons, Color.WHITE)
 
 	var river_polygons: Array = []
 	for entry: Dictionary in _river_polys:
 		river_polygons.append(entry["points"])
-	_river_mesh = _polygon_mesh(river_polygons, COL_RIVER)
+	_river_mesh = _polygon_mesh(river_polygons, Color.WHITE)
 
 	# Ocean outline colors depend on the distance level, so keep one batched
 	# line list per level (five calls instead of one call per outline ring).
@@ -295,7 +365,7 @@ func _build_static_geometry() -> void:
 			continue
 		ice_polygons.append(points)
 		_ice_outline_segments.append_array(_closed_line_segments(points))
-	_ice_mesh = _polygon_mesh(ice_polygons, Color(0.94, 0.97, 1.0, 0.92))
+	_ice_mesh = _polygon_mesh(ice_polygons, Color.WHITE)
 
 
 func _mesh_from_cells(color_fn: Callable, alpha: float = 1.0, include_water: bool = false) -> ArrayMesh:
@@ -442,6 +512,48 @@ func _draw_mesh(mesh: ArrayMesh) -> void:
 		draw_mesh(mesh, null)
 
 
+## Draws a mesh whose polygons were baked white, tinting it with a live style
+## color. This is what lets the Style tab recolor ocean/land/lakes/rivers
+## without rebuilding any geometry.
+## Draws a polyline whose width varies per point (quad per segment + round
+## joints) — used for rivers whose ribbon polygon self-intersects.
+func _draw_tapered_stroke(points: PackedVector2Array, widths: PackedFloat32Array, color: Color) -> void:
+	var n: int = points.size()
+	if n == 0:
+		return
+	if n == 1:
+		draw_circle(points[0], maxf(widths[0] * 0.5, 0.5), color)
+		return
+	var half_widths := PackedFloat32Array()
+	half_widths.resize(n)
+	for i: int in n:
+		half_widths[i] = maxf(widths[i] * 0.5, 0.5)
+	draw_circle(points[0], half_widths[0], color)
+	for i: int in n - 1:
+		var p0: Vector2 = points[i]
+		var p1: Vector2 = points[i + 1]
+		var dir: Vector2 = p1 - p0
+		if dir.length_squared() < 0.0001:
+			continue
+		dir = dir.normalized()
+		var normal := Vector2(-dir.y, dir.x)
+		var w0: float = half_widths[i]
+		var w1: float = half_widths[i + 1]
+		var quad := PackedVector2Array([
+			p0 + normal * w0,
+			p1 + normal * w1,
+			p1 - normal * w1,
+			p0 - normal * w0
+		])
+		draw_colored_polygon(quad, color)
+		draw_circle(p1, w1, color)
+
+
+func _draw_tinted(mesh: ArrayMesh, color: Color) -> void:
+	if mesh != null:
+		draw_mesh(mesh, null, Transform2D(), color)
+
+
 func queue_redraw_all() -> void:
 	queue_redraw()
 
@@ -450,23 +562,24 @@ func _draw() -> void:
 	if sim == null or sim.pack == null:
 		return
 	# --- ocean ---
-	draw_rect(Rect2(-sim.map_width, -sim.map_height, sim.map_width * 3.0, sim.map_height * 3.0), COL_OCEAN)
+	draw_rect(Rect2(-sim.map_width, -sim.map_height, sim.map_width * 3.0, sim.map_height * 3.0), style_ocean)
 	for level_value: Variant in _ocean_outline_segments:
 		var level: int = int(level_value)
 		var alpha: float = 0.5 + 0.1 * absf(level)
-		var col := COL_OCEAN_OUTLINE
+		var col := style_ocean_outline
 		col.a = clampf(0.9 - alpha * 0.12, 0.15, 0.6)
 		var segments: PackedVector2Array = _ocean_outline_segments[level]
 		if not segments.is_empty():
 			draw_multiline(segments, col, 1.2, true)
 
 	# --- landmasses ---
-	_draw_mesh(_land_mesh)
+	_draw_tinted(_land_mesh, style_land)
 
 	# --- lakes ---
-	_draw_mesh(_lake_mesh)
-	if not _lake_shore_segments.is_empty():
-		draw_multiline(_lake_shore_segments, COL_LAKE_SHORE, 0.8, true)
+	if show_lakes:
+		_draw_tinted(_lake_mesh, style_lake)
+		if not _lake_shore_segments.is_empty():
+			draw_multiline(_lake_shore_segments, style_lake.lightened(0.12), 0.8, true)
 
 	# --- cell-based overlays (under rivers, over land) ---
 	if show_heights:
@@ -484,6 +597,21 @@ func _draw() -> void:
 			_draw_mesh(_state_mesh)
 		if show_provinces:
 			_draw_mesh(_province_mesh)
+
+	# --- data layers (temperature, precipitation, population, markets) ---
+	if show_temperature:
+		_draw_mesh(_temperature_mesh)
+	if show_precipitation:
+		_draw_mesh(_precipitation_mesh)
+		_draw_wind_arrows()
+	if show_population:
+		_draw_mesh(_population_mesh)
+	if show_markets:
+		_draw_mesh(_market_mesh)
+		_draw_market_centers()
+	if show_trade:
+		if not _trade_segments.is_empty():
+			draw_multiline(_trade_segments, Color("#8a6d3b"), 0.5, true)
 
 	# --- ice (glaciers on land, icebergs on water) ---
 	if show_ice:
@@ -506,13 +634,15 @@ func _draw() -> void:
 
 	# --- coastlines (strokes on top of fills) ---
 	if not _coast_segments.is_empty():
-		draw_multiline(_coast_segments, COL_COAST, 1.0, true)
-	if not _lake_shore_segments.is_empty():
-		draw_multiline(_lake_shore_segments, COL_COAST, 0.7, true)
+		draw_multiline(_coast_segments, style_coast, style_coast_width, true)
+	if show_lakes and not _lake_shore_segments.is_empty():
+		draw_multiline(_lake_shore_segments, style_coast, style_coast_width * 0.7, true)
 
 	# --- rivers ---
 	if show_rivers:
-		_draw_mesh(_river_mesh)
+		_draw_tinted(_river_mesh, style_river)
+		for stroke: Dictionary in _river_strokes:
+			_draw_tapered_stroke(stroke["points"], stroke["widths"], style_river)
 
 	# --- relief icons (mountains and forests) ---
 	if show_relief_icons:
@@ -521,7 +651,12 @@ func _draw() -> void:
 	# --- routes (roads, trails, sea routes) ---
 	if show_routes:
 		_draw_routes()
+	if show_journeys:
 		_draw_journeys()
+
+	# --- coordinates graticule ---
+	if show_coordinates:
+		_draw_coordinates()
 
 	# --- burgs ---
 	if show_burgs:
@@ -539,6 +674,10 @@ func _draw() -> void:
 	if show_markers:
 		_draw_markers()
 
+	# --- grid overlay ---
+	if show_grid:
+		_draw_grid()
+
 	# --- labels ---
 	if show_labels:
 		_draw_labels()
@@ -550,6 +689,28 @@ func _draw() -> void:
 	# --- province labels ---
 	if show_province_labels:
 		_draw_province_labels()
+
+	# --- rulers (measure tool) ---
+	if show_rulers:
+		_draw_rulers()
+
+	# --- brush preview circle ---
+	if brush_preview_visible:
+		draw_arc(brush_preview_pos, brush_preview_radius, 0.0, TAU, 48, Color(1, 1, 1, 0.75), 1.2, true)
+		draw_arc(brush_preview_pos, brush_preview_radius, 0.0, TAU, 48, Color(0.1, 0.1, 0.1, 0.55), 0.6, true)
+
+	# --- compass rose (map furniture, world space) ---
+	if show_compass:
+		_draw_compass(Vector2(sim.map_width - 76.0, 82.0), 56.0)
+
+	# --- screen-space furniture: scale bar + vignette ---
+	var screen_size: Vector2 = get_viewport_rect().size
+	draw_set_transform_matrix(Transform2D())
+	if show_scale_bar:
+		_draw_scale_bar(screen_size)
+	if show_vignette and _vignette_texture != null:
+		draw_texture_rect(_vignette_texture, Rect2(Vector2.ZERO, screen_size), false)
+	draw_set_transform_matrix(get_viewport_transform())
 
 
 func _cell_color_safe(_cell_id: int) -> Color:
@@ -661,7 +822,7 @@ func _draw_cell_borders() -> void:
 
 func _draw_state_borders() -> void:
 	if not _border_segments.is_empty():
-		draw_multiline(_border_segments, COL_BORDER, 1.4, true)
+		draw_multiline(_border_segments, style_border, style_border_width, true)
 
 
 func _draw_province_borders() -> void:
@@ -694,11 +855,11 @@ func _draw_labels() -> void:
 			continue
 		var pole: Vector2 = sim.poles_cache[state["i"]]
 		var cells: int = state.get("cells", 10)
-		var font_size: float = clampf(sqrt(float(cells)) * 2.2, 9.0, 34.0)
+		var font_size: float = clampf(sqrt(float(cells)) * 2.2, 9.0, 34.0) * style_label_scale
 		var name_v: String = state.get("fullName", state["name"])
 		var width: float = _font.get_string_size(name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size)).x
 		draw_string_outline(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, int(font_size), 3, COL_TEXT_OUT)
-		draw_string(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, int(font_size), COL_TEXT)
+		draw_string(_font, pole + Vector2(-width / 2.0, 0), name_v, HORIZONTAL_ALIGNMENT_LEFT, -1, int(font_size), style_text)
 
 	# burg labels
 	for b in sim.pack.burgs:
@@ -709,9 +870,10 @@ func _draw_labels() -> void:
 		if pop < 2.0 and not is_capital:
 			continue
 		var font_size: float = 4.5 if is_capital else clampf(2.5 + pop / 12.0, 3.0, 5.0)
+		font_size *= style_label_scale
 		var pos := Vector2(b["x"], b["y"]) + Vector2(0, 4.0 + font_size * 0.9)
 		draw_string_outline(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), 2, COL_TEXT_OUT)
-		draw_string(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), COL_TEXT)
+		draw_string(_font, pos, b["name"], HORIZONTAL_ALIGNMENT_CENTER, -1, int(font_size), style_text)
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +965,7 @@ func _build_relief_icons() -> void:
 
 
 func _draw_ice() -> void:
-	_draw_mesh(_ice_mesh)
+	_draw_tinted(_ice_mesh, style_ice)
 	if not _ice_outline_segments.is_empty():
 		draw_multiline(_ice_outline_segments, Color(0.8, 0.88, 0.96, 0.9), 0.6, true)
 
@@ -892,11 +1054,11 @@ func _dashed_segments(points: PackedVector2Array, dash: float, gap: float) -> Pa
 func _draw_routes() -> void:
 	# Every array contains line pairs, so a whole route layer is one draw call.
 	if not _sea_route_segments.is_empty():
-		draw_multiline(_sea_route_segments, Color("#4a7ab5"), 0.7, true)
+		draw_multiline(_sea_route_segments, style_searoute, style_road_width * 0.65, true)
 	if not _road_segments.is_empty():
-		draw_multiline(_road_segments, Color("#7a5c3e"), 1.1, true)
+		draw_multiline(_road_segments, style_road, style_road_width, true)
 	if not _trail_segments.is_empty():
-		draw_multiline(_trail_segments, Color("#8a7355"), 0.6, true)
+		draw_multiline(_trail_segments, style_trail, style_road_width * 0.55, true)
 
 
 func _draw_journeys() -> void:
@@ -1107,3 +1269,357 @@ func _draw_province_labels() -> void:
 		var name_v: String = province.get("fullName", province.get("name", ""))
 		draw_string_outline(_font, pos, name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, 5, 2, COL_TEXT_OUT)
 		draw_string(_font, pos, name_v, HORIZONTAL_ALIGNMENT_CENTER, -1, 5, Color(0.2, 0.2, 0.3, 0.8))
+
+
+# ---------------------------------------------------------------------------
+# FMG-parity data layers: temperature, precipitation, population, markets, trade
+
+# d3 interpolateSpectral anchors (ColorBrewer Spectral), hot -> cold order.
+const SPECTRAL: Array = [
+	Color("#9e0142"), Color("#d53e4f"), Color("#f46d43"), Color("#fdae61"),
+	Color("#fee08b"), Color("#ffffbf"), Color("#e6f598"), Color("#abdda4"),
+	Color("#66c2a5"), Color("#3288bd"), Color("#5e4fa2")
+]
+
+
+## Temperature of a packed cell, sampled from its parent grid cell.
+func _cell_temperature(i: int) -> int:
+	if sim.grid == null or sim.pack.g.is_empty():
+		return 0
+	var parent: int = sim.pack.g[i]
+	if parent < 0 or parent >= sim.grid.temp.size():
+		return 0
+	return sim.grid.temp[parent]
+
+
+## Original domain for the temperature scheme: supported extremes -50..50 °C.
+func _cell_temperature_color(i: int) -> Color:
+	var t: float = clampf((float(_cell_temperature(i)) + 50.0) / 100.0, 0.0, 1.0)
+	# scheme(1 - (t - tMin) / delta): hot maps to spectral(0) = dark red.
+	var pos: float = (1.0 - t) * float(SPECTRAL.size() - 1)
+	var idx: int = mini(int(pos), SPECTRAL.size() - 2)
+	var color: Color = (SPECTRAL[idx] as Color).lerp(SPECTRAL[idx + 1], pos - float(idx))
+	color.a = 0.72
+	return color
+
+
+func _cell_market_color(i: int) -> Color:
+	var market_id: int = sim.pack.market[i]
+	if market_id <= 0 or market_id >= sim.pack.markets.size():
+		return Color(0, 0, 0, 0)
+	var market: Dictionary = sim.pack.markets[market_id]
+	return Color.html(str(market.get("color", "#cccccc")))
+
+
+func _append_quad(data: Dictionary, a: Vector2, b: Vector2, c: Vector2, d: Vector2, color: Color) -> void:
+	var vertices: PackedVector2Array = data["vertices"]
+	var colors: PackedColorArray = data["colors"]
+	for point: Vector2 in [a, b, c, a, c, d]:
+		vertices.append(point)
+		colors.append(color)
+	data["vertices"] = vertices
+	data["colors"] = colors
+
+
+func _build_data_meshes() -> void:
+	var pack: FmgGraph = sim.pack
+	_temperature_mesh = _mesh_from_cells(_cell_temperature_color, 1.0, true)
+
+	# Precipitation: filled discs per land cell, radius = sqrt(prec / 4) scaled
+	# by the point count like the original (draw-precipitation.ts).
+	var prec_data := {"vertices": PackedVector2Array(), "colors": PackedColorArray()}
+	var cells_modifier: float = pow(float(maxi(sim.cells_desired, 1)) / 10000.0, 0.25)
+	var grid_prec := sim.grid.prec if sim.grid != null else PackedInt32Array()
+	var prec_color := Color(0.29, 0.45, 0.71, 0.5)
+	for i: int in pack.cell_count():
+		if pack.h[i] < 20 or grid_prec.is_empty():
+			continue
+		var parent: int = pack.g[i]
+		if parent < 0 or parent >= grid_prec.size():
+			continue
+		var prec: int = grid_prec[parent]
+		if prec <= 0:
+			continue
+		var radius: float = sqrt(float(prec) / 4.0) / maxf(cells_modifier, 0.35)
+		if radius < 0.35:
+			continue
+		radius = minf(radius, 14.0)
+		var center: Vector2 = pack.points[i]
+		for k: int in 6:
+			var a0: float = TAU * float(k) / 6.0
+			var a1: float = TAU * float(k + 1) / 6.0
+			_append_quad(prec_data,
+				center,
+				center + Vector2(cos(a0), sin(a0)) * radius,
+				center + Vector2(cos(a0), sin(a0)) * radius,
+				center + Vector2(cos(a1), sin(a1)) * radius,
+				prec_color)
+	_precipitation_mesh = _make_color_mesh(prec_data["vertices"], prec_data["colors"])
+
+	# Population: rural bars per cell and urban bars per burg (height pop / 5).
+	var pop_data := {"vertices": PackedVector2Array(), "colors": PackedColorArray()}
+	var rural_color := Color(0.55, 0.62, 0.53, 0.85)
+	var urban_color := Color(0.48, 0.12, 0.12, 0.9)
+	for i: int in pack.cell_count():
+		if pack.h[i] < 20 or pack.pop[i] <= 0.0:
+			continue
+		var p: Vector2 = pack.points[i]
+		var height: float = minf(pack.pop[i] / 5.0, 40.0)
+		if height < 0.8:
+			continue
+		_append_quad(pop_data, p + Vector2(-0.32, 0), p + Vector2(0.32, 0), p + Vector2(0.32, -height), p + Vector2(-0.32, -height), rural_color)
+	for burg_value: Variant in pack.burgs:
+		if burg_value == null:
+			continue
+		var burg: Dictionary = burg_value
+		var p: Vector2 = Vector2(float(burg.get("x", 0.0)), float(burg.get("y", 0.0)))
+		var height: float = minf(float(burg.get("population", 0.0)) / 5.0, 60.0)
+		if height < 0.8:
+			continue
+		_append_quad(pop_data, p + Vector2(-0.7, 0), p + Vector2(0.7, 0), p + Vector2(0.7, -height), p + Vector2(-0.7, -height), urban_color)
+	_population_mesh = _make_color_mesh(pop_data["vertices"], pop_data["colors"])
+
+	# Market territories + centers; trade deals connect market centers.
+	_market_mesh = _mesh_from_cells(_cell_market_color, 0.28)
+	var centers := {}
+	for market_value: Variant in pack.markets:
+		var market: Dictionary = market_value
+		var burg_id: int = int(market.get("centerBurgId", 0))
+		if burg_id <= 0 or burg_id >= pack.burgs.size() or pack.burgs[burg_id] == null:
+			continue
+		var burg: Dictionary = pack.burgs[burg_id]
+		var pos := Vector2(float(burg["x"]), float(burg["y"]))
+		var color: Color = Color.html(str(market.get("color", "#cccccc")))
+		_market_centers.append({"pos": pos, "name": str(burg.get("name", "?")), "color": color})
+		centers[int(market["i"])] = pos
+	for deal_value: Variant in pack.deals:
+		var deal: Dictionary = deal_value
+		var a: Vector2 = centers.get(int(deal.get("seller", 0)), Vector2.ZERO)
+		var b: Vector2 = centers.get(int(deal.get("buyer", 0)), Vector2.ZERO)
+		if a == Vector2.ZERO or b == Vector2.ZERO or a == b:
+			continue
+		# curved arc so overlapping deals remain readable
+		var mid: Vector2 = (a + b) * 0.5
+		var lift: Vector2 = (b - a).orthogonal().normalized() * clampf(a.distance_to(b) * 0.12, 2.0, 26.0)
+		var steps: int = 12
+		var prev: Vector2 = a
+		for k: int in range(1, steps + 1):
+			var t: float = float(k) / float(steps)
+			var point: Vector2 = _quad_point(a, mid + lift, b, t)
+			_trade_segments.append(prev)
+			_trade_segments.append(point)
+			prev = point
+
+
+func _quad_point(a: Vector2, control: Vector2, b: Vector2, t: float) -> Vector2:
+	var ab: Vector2 = a.lerp(control, t)
+	var cb: Vector2 = control.lerp(b, t)
+	return ab.lerp(cb, t)
+
+
+func _draw_market_centers() -> void:
+	for entry_value: Variant in _market_centers:
+		var entry: Dictionary = entry_value
+		var pos: Vector2 = entry["pos"]
+		var color: Color = entry["color"]
+		draw_circle(pos, 2.2, color.darkened(0.2))
+		draw_arc(pos, 3.4, 0.0, TAU, 16, Color(0.1, 0.1, 0.1, 0.6), 0.5, true)
+
+
+## Prevailing wind arrows along the top and bottom edges (precipitation layer).
+func _draw_wind_arrows() -> void:
+	if sim.climate_winds.is_empty():
+		return
+	var col := Color(0.24, 0.36, 0.55, 0.85)
+	for i: int in mini(6, sim.climate_winds.size()):
+		var angle: float = deg_to_rad(float(sim.climate_winds[i]))
+		var direction := Vector2(sin(angle), -cos(angle))
+		for edge_y: float in [16.0, sim.map_height - 16.0]:
+			var center := Vector2((float(i) + 0.5) * sim.map_width / 6.0, edge_y)
+			var tip := center + direction * 9.0
+			var tail := center - direction * 9.0
+			draw_line(tail, tip, col, 1.1, true)
+			var side := Vector2(-direction.y, direction.x)
+			draw_colored_polygon(PackedVector2Array([
+				tip, tip - direction * 3.4 + side * 2.0, tip - direction * 3.4 - side * 2.0
+			]), col)
+
+
+# ---------------------------------------------------------------------------
+# Map furniture: grid, coordinates, rulers, compass rose, scale bar, vignette
+
+func _draw_grid() -> void:
+	var col := Color(0.1, 0.15, 0.2, 0.25)
+	var segments := PackedVector2Array()
+	var step := 100.0
+	var x := step
+	while x < sim.map_width:
+		segments.append(Vector2(x, 0))
+		segments.append(Vector2(x, sim.map_height))
+		x += step
+	var y := step
+	while y < sim.map_height:
+		segments.append(Vector2(0, y))
+		segments.append(Vector2(sim.map_width, y))
+		y += step
+	if not segments.is_empty():
+		draw_multiline(segments, col, 0.6, true)
+
+
+## Equirectangular graticule from the map's latitude span (lat_n/lat_s/lat_t).
+func _draw_coordinates() -> void:
+	if sim.lat_t <= 0.0:
+		return
+	var lat_n: float = sim.lat_n
+	var lat_s: float = sim.lat_s
+	var lat_t: float = sim.lat_t
+	var lon_t: float = minf(sim.map_width / sim.map_height * lat_t, 360.0)
+	var lon_w: float = -lon_t / 2.0
+	var steps: Array = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0]
+	var goal: float = lat_t / 12.0
+	var step: float = 30.0
+	for candidate: float in steps:
+		if absf(candidate - goal) < absf(step - goal):
+			step = candidate
+	var col := Color(0.12, 0.2, 0.33, 0.55)
+	var segments := PackedVector2Array()
+	var labels: Array = []
+	var lat: float = ceilf(lat_s / step) * step
+	while lat <= lat_n + 0.001:
+		var y: float = (lat_n - lat) / lat_t * sim.map_height
+		segments.append(Vector2(0, y))
+		segments.append(Vector2(sim.map_width, y))
+		labels.append({"text": "%d°" % int(lat), "pos": Vector2(4.0, y - 2.0)})
+		lat += step
+	var lon: float = ceilf(lon_w / step) * step
+	while lon <= lon_w + lon_t + 0.001:
+		var x: float = (lon - lon_w) / lon_t * sim.map_width
+		segments.append(Vector2(x, 0))
+		segments.append(Vector2(x, sim.map_height))
+		labels.append({"text": "%d°" % int(round(lon)), "pos": Vector2(x + 2.0, 9.0)})
+		lon += step
+	if not segments.is_empty():
+		draw_multiline(segments, col, 0.5, true)
+	for label_value: Variant in labels:
+		var label: Dictionary = label_value
+		draw_string_outline(_font, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, 2, Color(1, 1, 1, 0.65))
+		draw_string(_font, label["pos"], label["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 7, col)
+
+
+## Measure tool: polyline through ruler_points with a running distance label.
+func _draw_rulers() -> void:
+	if ruler_points.size() < 1:
+		return
+	var col := Color(0.75, 0.1, 0.1, 0.9)
+	var segments := PackedVector2Array()
+	var total: float = 0.0
+	for i: int in ruler_points.size() - 1:
+		segments.append(ruler_points[i])
+		segments.append(ruler_points[i + 1])
+		total += ruler_points[i].distance_to(ruler_points[i + 1])
+	if not segments.is_empty():
+		draw_multiline(segments, col, 1.2, true)
+	for point: Vector2 in ruler_points:
+		draw_circle(point, 2.6, Color(0.95, 0.9, 0.8, 0.95))
+		draw_arc(point, 2.6, 0.0, TAU, 12, col, 0.8, true)
+	if ruler_points.size() >= 2:
+		var last: Vector2 = ruler_points[ruler_points.size() - 1]
+		var label: String = _format_distance(total)
+		var size: int = 11
+		draw_string_outline(_font, last + Vector2(6.0, -6.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, 3, Color(1, 1, 1, 0.8))
+		draw_string(_font, last + Vector2(6.0, -6.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+
+
+func _format_distance(pixels: float) -> String:
+	var km: float = pixels * distance_scale
+	if km < 10.0:
+		return "%.1f км" % km
+	return "%d км" % int(round(km))
+
+
+## 16-point compass rose, two-tone points like the original wind rose.
+func _draw_compass(center: Vector2, radius: float) -> void:
+	var dark := Color("#27374d")
+	var light := Color("#f4f1e6")
+	var ring := Color("#3a4a5f")
+	draw_arc(center, radius, 0.0, TAU, 56, ring, 1.2, true)
+	draw_arc(center, radius * 0.82, 0.0, TAU, 48, Color(ring, 0.6), 0.6, true)
+	# star points: 8 major (alternate two-tone) + 8 minor (dark, half length)
+	for k: int in 16:
+		var major: bool = k % 2 == 0
+		var angle: float = -PI / 2.0 + TAU * float(k) / 16.0
+		var length: float = radius * (0.92 if major else 0.5)
+		var half_width: float = TAU / 16.0 * 0.55
+		var tip := center + Vector2(cos(angle), sin(angle)) * length
+		var left := center + Vector2(cos(angle - half_width), sin(angle - half_width)) * radius * 0.1
+		var right := center + Vector2(cos(angle + half_width), sin(angle + half_width)) * radius * 0.1
+		if major and k % 4 == 0:
+			# cardinal points: split into dark and light halves
+			draw_colored_polygon(PackedVector2Array([center, tip, left]), dark)
+			draw_colored_polygon(PackedVector2Array([center, tip, right]), light)
+		elif major:
+			draw_colored_polygon(PackedVector2Array([center, tip, left]), Color(dark, 0.85))
+			draw_colored_polygon(PackedVector2Array([center, tip, right]), Color(light, 0.85))
+		else:
+			draw_colored_polygon(PackedVector2Array([center, tip, left]), Color(dark, 0.7))
+			draw_colored_polygon(PackedVector2Array([center, tip, right]), Color(light, 0.7))
+	draw_circle(center, radius * 0.07, dark)
+	draw_circle(center, radius * 0.035, light)
+	# N E S W letters
+	var letters := [["N", 0.0], ["E", PI / 2.0], ["S", PI], ["W", -PI / 2.0]]
+	for entry: Array in letters:
+		var angle: float = float(entry[1])
+		var pos := center + Vector2(cos(angle), sin(angle)) * radius * 1.12
+		var letter: String = str(entry[0])
+		var width: float = _font.get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		draw_string_outline(_font, pos + Vector2(-width / 2.0, 5.0), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, 3, Color(1, 1, 1, 0.75))
+		draw_string(_font, pos + Vector2(-width / 2.0, 5.0), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("#33465e"))
+
+
+## Screen-fixed scale bar in the bottom-left corner, like the original's.
+func _draw_scale_bar(screen_size: Vector2) -> void:
+	var km_per_px: float = maxf(distance_scale, 0.01)
+	var target_px: float = 140.0
+	var raw_km: float = target_px * km_per_px
+	var magnitude: float = pow(10.0, floorf(log(raw_km) / log(10.0)))
+	var nice: float = magnitude
+	for candidate: float in [1.0, 2.0, 5.0, 10.0]:
+		if raw_km <= candidate * magnitude * 1.0001:
+			nice = candidate * magnitude
+			break
+	var bar_px: float = nice / km_per_px
+	var pos := Vector2(24.0, screen_size.y - 40.0)
+	var bar_height: float = 6.0
+	var cells_count: int = 4
+	for k: int in cells_count:
+		var rect := Rect2(pos + Vector2(bar_px * float(k) / float(cells_count), 0), Vector2(bar_px / float(cells_count), bar_height))
+		draw_rect(rect, Color(0.08, 0.1, 0.12) if k % 2 == 0 else Color(0.96, 0.94, 0.88), true)
+	draw_rect(Rect2(pos, Vector2(bar_px, bar_height)), Color(0.08, 0.1, 0.12), false, 1.0)
+	var label: String = "%s км" % _format_number(nice)
+	var label_size: int = 12
+	var width: float = _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size).x
+	draw_string_outline(_font, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, 3, Color(1, 1, 1, 0.8))
+	draw_string(_font, pos + Vector2((bar_px - width) / 2.0, -5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, Color(0.08, 0.1, 0.12))
+
+
+func _format_number(value: float) -> String:
+	var rounded := int(round(value))
+	if rounded >= 1000:
+		return "%d %03d" % [floori(rounded / 1000.0), rounded % 1000]
+	return str(rounded)
+
+
+## Soft dark border around the viewport (the original's vignette layer).
+func _build_vignette_texture() -> void:
+	if _vignette_texture != null:
+		return
+	var size := 128
+	var image := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var center := Vector2(size / 2.0, size / 2.0)
+	for y: int in size:
+		for x: int in size:
+			var d := Vector2(float(x) + 0.5, float(y) + 0.5).distance_to(center) / (size * 0.72)
+			var alpha: float = clampf((d - 0.55) / 0.45, 0.0, 1.0)
+			alpha = alpha * alpha * 0.42
+			image.set_pixel(x, y, Color(0.05, 0.08, 0.14, alpha))
+	_vignette_texture = ImageTexture.create_from_image(image)
