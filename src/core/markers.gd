@@ -79,6 +79,22 @@ func _shuffle(arr: Array) -> void:
 		arr[j] = tmp
 
 
+## The burg sitting on `cell_id`, or null (pack.burgs[0] is a null placeholder).
+func _burg_at(cell_id: int) -> Variant:
+	var burg_id: int = pack.burg[cell_id]
+	if burg_id <= 0 or burg_id >= pack.burgs.size():
+		return null
+	var burg: Variant = pack.burgs[burg_id]
+	return burg if burg is Dictionary else null
+
+
+func _burg_name(cell_id: int) -> String:
+	var burg: Variant = _burg_at(cell_id)
+	if burg == null:
+		return ""
+	return str((burg as Dictionary).get("name", ""))
+
+
 func _free(cell_id: int) -> bool:
 	return occupied[cell_id] == 0
 
@@ -134,8 +150,9 @@ func _list_bridges() -> Array:
 	for i: int in pack.cell_count():
 		if not _free(i) or pack.burg[i] == 0 or pack.t[i] == 1 or pack.r[i] == 0:
 			continue
-		var burg: Dictionary = pack.burgs[pack.burg[i]] if pack.burg[i] < pack.burgs.size() else null
-		if burg != null and float(burg.get("population", 0.0)) > 20.0 and pack.fl[i] > mean_flux:
+		var burg: Variant = _burg_at(i)
+		if burg != null and float((burg as Dictionary).get("population", 0.0)) > 20.0 \
+				and pack.fl[i] > mean_flux:
 			out.append(i)
 	return out
 
@@ -348,8 +365,7 @@ func _add_water_source(marker: Dictionary, cell: int) -> void:
 
 func _add_mine(marker: Dictionary, cell: int) -> void:
 	var resource: String = rng.rw({"соли": 5, "золота": 2, "серебра": 4, "меди": 2, "железа": 3, "свинца": 1, "олова": 1})
-	var burg: Dictionary = pack.burgs[pack.burg[cell]] if pack.burg[cell] < pack.burgs.size() else null
-	var burg_name: String = burg.get("name", "") if burg != null else ""
+	var burg_name: String = _burg_name(cell)
 	marker["name"] = "%s — шахта %s" % [burg_name, resource]
 	marker["legend"] = "%s добывает здесь %s." % [burg_name, resource]
 
@@ -444,8 +460,7 @@ func _add_ruins(marker: Dictionary, _cell: int) -> void:
 
 
 func _add_library(marker: Dictionary, cell: int) -> void:
-	var burg: Dictionary = pack.burgs[pack.burg[cell]] if pack.burg[cell] < pack.burgs.size() else null
-	var burg_name: String = burg.get("name", "") if burg != null else ""
+	var burg_name: String = _burg_name(cell)
 	marker["name"] = "Библиотека %s" % burg_name
 	marker["legend"] = "Хранилище древних манускриптов."
 

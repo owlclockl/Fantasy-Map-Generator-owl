@@ -22,6 +22,14 @@ func _init(rng_ref: FmgRng, pack_ref: FmgGraph, grid_ref: FmgGraph) -> void:
 	grid = grid_ref
 
 
+## Burg dictionary by id, or null (pack.burgs[0] is a null placeholder).
+func _burg_by_id(burg_id: int) -> Variant:
+	if burg_id <= 0 or burg_id >= pack.burgs.size():
+		return null
+	var burg: Variant = pack.burgs[burg_id]
+	return burg if burg is Dictionary else null
+
+
 func generate() -> void:
 	var markets: Array = _create_markets()
 	_expand_markets(markets)
@@ -82,9 +90,10 @@ func _expand_markets(markets: Array) -> void:
 	var trade_centers := {}
 
 	for market: Dictionary in markets:
-		var center_burg: Dictionary = pack.burgs[int(market["centerBurgId"])] if int(market["centerBurgId"]) < pack.burgs.size() else null
-		if center_burg == null:
+		var center_burg_v: Variant = _burg_by_id(int(market["centerBurgId"]))
+		if center_burg_v == null:
 			continue
+		var center_burg: Dictionary = center_burg_v
 		trade_centers[int(market["centerBurgId"])] = true
 		var start_cell: int = int(center_burg["cell"])
 		pack.market[start_cell] = int(market["i"])
@@ -178,17 +187,19 @@ func _generate_deals() -> void:
 	pack.deals = []
 	var deal_id: int = 0
 	for market: Dictionary in pack.markets:
-		var center: Dictionary = pack.burgs[int(market["centerBurgId"])] if int(market["centerBurgId"]) < pack.burgs.size() else null
-		if center == null:
+		var center_v: Variant = _burg_by_id(int(market["centerBurgId"]))
+		if center_v == null:
 			continue
+		var center: Dictionary = center_v
 		var center_pos := Vector2(center["x"], center["y"])
 		var others: Array = []
 		for other: Dictionary in pack.markets:
 			if other == market:
 				continue
-			var other_center: Dictionary = pack.burgs[int(other["centerBurgId"])] if int(other["centerBurgId"]) < pack.burgs.size() else null
-			if other_center == null:
+			var other_center_v: Variant = _burg_by_id(int(other["centerBurgId"]))
+			if other_center_v == null:
 				continue
+			var other_center: Dictionary = other_center_v
 			others.append({"market": other, "dist": center_pos.distance_to(Vector2(other_center["x"], other_center["y"]))})
 		others.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["dist"]) < float(b["dist"]))
 		for k: int in mini(2, others.size()):

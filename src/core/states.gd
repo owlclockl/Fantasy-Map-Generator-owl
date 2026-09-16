@@ -287,8 +287,8 @@ func assign_colors() -> void:
 		for color: String in colors:
 			var ok: bool = true
 			for neib: int in state.get("neighbors", []):
-				var neib_state: Dictionary = pack.states[neib] if neib < pack.states.size() else null
-				if neib_state != null and neib_state.get("color", "") == color:
+				var neib_state: Variant = pack.states[neib] if neib >= 0 and neib < pack.states.size() else null
+				if neib_state is Dictionary and (neib_state as Dictionary).get("color", "") == color:
 					ok = false
 					break
 			if ok:
