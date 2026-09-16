@@ -406,13 +406,18 @@ func label_text_width(font: Font, text: String, font_size: float) -> float:
 
 ## Oversampling passed to a draw call: the glyphs are rasterized at
 ## `font_size × factor` device pixels, which is what keeps zoomed text sharp.
-## Capped so a single glyph never rasterizes past label_max_px.
+## Capped so a single glyph never rasterizes past label_max_px, and snapped to
+## eighths while the camera glides: every distinct factor is a separate glyph
+## cache level, so a smooth zoom would otherwise litter the cache.
 func label_oversampling(font_size: float, mode: int = -1) -> float:
 	var factor := label_block_scale(mode)
 	var headroom: float = label_max_px / maxf(font_size, 1.0)
 	if headroom < factor:
 		factor = maxf(headroom, 1.0)
-	return clampf(factor, 1.0, 32.0)
+	factor = clampf(factor, 1.0, 32.0)
+	if factor < 1.06:
+		return 1.0
+	return snappedf(factor, 0.125)
 
 
 ## Pushes a rasterization factor onto a font so plain draw_string() calls (used by
@@ -430,7 +435,8 @@ func _set_font_oversampling(font: Font, factor: float) -> void:
 ## Rasterize the map fonts at the current zoom: without this Godot magnifies
 ## glyphs that were rasterized for another size and the text goes blurry.
 func _apply_font_oversampling() -> void:
-	var factor := clampf(canvas_scale(), 1.0, 32.0)
+	var factor := clampf(canvas_scale(), 1.0, 16.0)
+	factor = 1.0 if factor < 1.06 else snappedf(factor, 0.125)
 	_set_font_oversampling(_font, factor)
 	_set_font_oversampling(_font_sans, factor)
 
