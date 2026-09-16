@@ -134,6 +134,25 @@ SVG/CSV. Упрощения, о которых важно знать:
     `Thread` в `generation_worker.gd`; UI только опрашивает прогресс через
     `Mutex`, а результат применяется на главном потоке. На экспортных целях,
     где поток недоступен, остаётся синхронный fallback.
+16. **`generation_worker.gd:33` — синтаксическая ошибка в цикле.** Строка
+    `for index: int in stages.size()` (без двоеточия и без `range()`)
+    ломала разбор класса `FmgGenerationWorker`, а за ним — `main.gd`
+    («Could not parse global class», «Could not resolve class»).
+    Заменено на `for index in range(stages.size()):`.
+17. **`map_view.gd: _draw_mesh` под сигнатуру Godot 4.7.** В 4.7 аргументы
+    `CanvasItem.draw_mesh` переставлены: `(mesh, texture, transform, modulate)`.
+    Старый вызов `draw_mesh(mesh, Transform2D.IDENTITY, Color.WHITE)` давал
+    compile error и мешал загрузке основной сцены. Теперь `draw_mesh(mesh, null)`
+    (цвета вписаны в вершины меша).
+18. **Реки перестали теряться из-за семантики копий GDScript.** В
+    `hydrology.gd` список клеток реки хранился в `Dictionary` как
+    `PackedInt32Array`, а пополнялся через инлайновое приведение
+    `(rivers_data[river_id] as PackedInt32Array).append(...)`: каст создаёт
+    копию, и все 270+ «реках» оказывались с пустым списком клеток, а
+    `size() < 3` выбрасывал их — на карте генерировалось **0 рек**.
+    Пополнение идёт через локальную переменную с записью обратно в словарь.
+    Проверено на 75 комбинациях (15 шаблонов × 5 сидов): реки, имена рек,
+    навигация по ним, полигоны и GeoJSON-экспорт присутствуют, падений нет.
 
 ## Исправления в прошлых ревизиях
 

@@ -41,7 +41,7 @@ func run() -> FmgSim:
 	_progress_mutex.lock()
 	_stage_total = maxi(stages.size(), 1)
 	_progress_mutex.unlock()
-	for index: int in stages.size()
+	for index in range(stages.size()):
 		var stage: Array = stages[index]
 		_set_progress(index, str(stage[0]))
 		# Do not call FmgSim.run_stage here: that method emits a signal and
