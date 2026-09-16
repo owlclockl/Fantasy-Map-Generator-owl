@@ -71,7 +71,10 @@ func generate_precipitation(grid: FmgGraph, cells_desired: int, rng: FmgRng) -> 
 	_pass_wind(grid, winds_data["easterly"], 120.0 * modifier, -1, cells_x, modifier, rng)
 
 	var vert_t: int = winds_data["southerly"] + winds_data["northerly"]
-	if winds_data["northerly"] > 0:
+	# A user may configure all six belts as horizontal winds. In that case
+	# there is no north/south share to distribute; avoid the 0/0 division and
+	# let the horizontal passes provide precipitation normally.
+	if vert_t > 0 and winds_data["northerly"] > 0:
 		var band_n: int = int((absf(lat_n) - 1.0) / 5.0)
 		var lat_mod_n: float = _mean(LATITUDE_MODIFIER) if lat_t > 60.0 else LATITUDE_MODIFIER[clampi(band_n, 0, 17)]
 		var max_prec_n: float = (float(winds_data["northerly"]) / float(vert_t)) * 60.0 * modifier * lat_mod_n
@@ -80,7 +83,7 @@ func generate_precipitation(grid: FmgGraph, cells_desired: int, rng: FmgRng) -> 
 			north_sources.append(i)
 		_pass_wind(grid, north_sources, max_prec_n, cells_x, cells_y, modifier, rng)
 
-	if winds_data["southerly"] > 0:
+	if vert_t > 0 and winds_data["southerly"] > 0:
 		var band_s: int = int((absf(lat_s) - 1.0) / 5.0)
 		var lat_mod_s: float = _mean(LATITUDE_MODIFIER) if lat_t > 60.0 else LATITUDE_MODIFIER[clampi(band_s, 0, 17)]
 		var max_prec_s: float = (float(winds_data["southerly"]) / float(vert_t)) * 60.0 * modifier * lat_mod_s

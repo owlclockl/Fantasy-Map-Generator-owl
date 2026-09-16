@@ -1,7 +1,7 @@
 extends Node2D
-## Main orchestrator: builds the UI, runs the generation pipeline stage by
-## stage (keeping the UI responsive), handles the heightmap brush,
-## save/load and PNG export.
+## Main orchestrator: builds the UI, runs the generation pipeline in a worker
+## thread (keeping the UI responsive), handles the heightmap brush, save/load
+## and export.
 
 var sim: FmgSim = null # Sim autoload
 var view: MapView = null
@@ -16,6 +16,8 @@ var density_option: OptionButton = null
 var cultures_spin: SpinBox = null
 var cultures_set_option: OptionButton = null
 var states_spin: SpinBox = null
+var religions_spin: SpinBox = null
+var provinces_ratio_spin: SpinBox = null
 var burgs_check: CheckButton = null
 var climate_equator_spin: SpinBox = null
 var climate_north_spin: SpinBox = null
@@ -26,6 +28,9 @@ var generate_button: Button = null
 var brush_option: OptionButton = null
 var brush_size: HSlider = null
 var layer_checks: Dictionary = {}
+var menu_root: VBoxContainer = null
+var _generation_thread: Thread = null
+var _generation_worker: FmgGenerationWorker = null
 
 # brush state
 var brush_active: bool = false
@@ -109,6 +114,8 @@ func _on_generate_pressed() -> void:
 	sim.cultures_limit = int(cultures_spin.value)
 	sim.cultures_set = str(cultures_set_option.get_selected_metadata()) if cultures_set_option != null else sim.cultures_set
 	sim.states_limit = int(states_spin.value)
+	sim.religions_limit = int(religions_spin.value)
+	sim.provinces_ratio = float(provinces_ratio_spin.value)
 	sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
 	sim.poles_cache = {}
 	run_generation(false)
@@ -120,44 +127,41 @@ func _current_template_id() -> String:
 
 
 func run_generation(silent: bool = false) -> void:
+	if _generating:
+		return
 	_generating = true
-	if not silent:
-		generate_button.disabled = true
+	_set_menu_busy(true)
+	view.visible = false
 	progress_bar.show()
-	var t_start: int = Time.get_ticks_msec()
+	status_label.text = "Генерация запускается в фоновом потоке…"
 
-	var stages: Array = sim.pipeline()
-	var total: int = stages.size()
-	for i: int in stages.size():
-		var stage: Array = stages[i]
-		status_label.text = "Генерация: %s…" % stage[0]
-		progress_bar.value = float(i) / float(total)
-		await get_tree().process_frame
-		await get_tree().process_frame
-		sim.run_stage(stage)
-
-	sim.finish_generation(t_start)
-	progress_bar.value = 1.0
-	progress_bar.hide()
-	view.rebuild_cache()
-	camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
-	status_label.text = sim.get_stats_text()
-	_generating = false
-	if not silent:
-		generate_button.disabled = false
-	await get_tree().process_frame
+	# Use the live Sim instance so the existing Names autoload and all
+	# generators continue to share the same context. The map view is hidden
+	# while its graph is being replaced by the worker.
+	_generation_worker = FmgGenerationWorker.new({}, sim)
+	_generation_thread = Thread.new()
+	var start_error: Error = _generation_thread.start(_generation_worker.run, Thread.PRIORITY_NORMAL)
+	if start_error != OK:
+		# Thread creation can fail on a restricted export target. Keep a safe
+		# synchronous fallback instead of leaving the UI locked.
+		var result: FmgSim = _generation_worker.run()
+		_generation_thread = null
+		_generation_worker = null
+		_finish_generation_result(result, silent, "Генерация")
+		return
+	await _wait_for_generation_result(silent, "Генерация")
 
 
 func _regenerate_after_edit() -> void:
 	if _generating:
 		return
-	_rerun_pipeline(sim.pipeline_from_heightmap(), "Пересчёт")
+	_start_pipeline_tail("heightmap", "Пересчёт")
 
 
 func _on_climate_apply_pressed() -> void:
 	if _generating or sim.grid == null:
 		return
-	_rerun_pipeline(sim.pipeline_from_climate(), "Климат")
+	_start_pipeline_tail("climate", "Климат")
 
 
 func _on_wind_changed(value: float, index: int) -> void:
@@ -165,25 +169,96 @@ func _on_wind_changed(value: float, index: int) -> void:
 		sim.climate_winds[index] = value
 
 
-## reruns a pipeline tail (after a brush or climate edit), keeping the UI alive
-func _rerun_pipeline(stages: Array, verb: String) -> void:
-	if _generating:
-		return
+func _start_pipeline_tail(tail: String, verb: String) -> void:
 	_generating = true
-	generate_button.disabled = true
+	_set_menu_busy(true)
+	view.visible = false
 	progress_bar.show()
-	var total: int = stages.size()
-	for i: int in stages.size():
-		var stage: Array = stages[i]
-		status_label.text = "%s: %s…" % [verb, stage[0]]
-		progress_bar.value = float(i) / float(total)
+	status_label.text = "%s запускается в фоновом потоке…" % verb
+	_generation_worker = FmgGenerationWorker.new({}, sim, tail)
+	_generation_thread = Thread.new()
+	var start_error: Error = _generation_thread.start(_generation_worker.run, Thread.PRIORITY_NORMAL)
+	if start_error != OK:
+		var result: FmgSim = _generation_worker.run()
+		_generation_thread = null
+		_generation_worker = null
+		_finish_generation_result(result, false, verb)
+		return
+	await _wait_for_generation_result(false, verb)
+
+
+## Poll only the worker's mutex-protected progress on the main thread. All
+## graph generation and recipe production stay off the UI thread.
+func _wait_for_generation_result(silent: bool, verb: String) -> void:
+	while _generation_thread != null and _generation_thread.is_alive():
+		var progress: Dictionary = _generation_worker.get_progress()
+		var total: int = maxi(int(progress.get("total", 1)), 1)
+		var index: int = int(progress.get("index", 0))
+		status_label.text = "%s: %s…" % [verb, progress.get("name", "Подготовка")]
+		progress_bar.value = clampf(float(index) / float(total), 0.0, 0.99)
 		await get_tree().process_frame
-		sim.run_stage(stage)
+
+	if _generation_thread == null:
+		return
+	var result: Variant = _generation_thread.wait_to_finish()
+	_generation_thread = null
+	_generation_worker = null
+	if result is FmgSim:
+		_finish_generation_result(result as FmgSim, silent, verb)
+	else:
+		status_label.text = "%s: поток завершился без результата" % verb
+		view.visible = true
+		_generating = false
+		_set_menu_busy(false)
+		progress_bar.hide()
+
+
+func _finish_generation_result(result: FmgSim, silent: bool, verb: String) -> void:
+	if result == null:
+		status_label.text = "%s: не удалось получить результат" % verb
+		view.visible = true
+		_generating = false
+		_set_menu_busy(false)
+		progress_bar.hide()
+		return
+	if result != sim:
+		sim.adopt_generation(result)
+	# The signal is emitted here, on the main thread, after the worker has
+	# stopped touching the generated data.
+	sim.generation_time_ms = result.generation_time_ms
+	sim.map_generated.emit()
+	progress_bar.value = 1.0
 	progress_bar.hide()
 	view.rebuild_cache()
+	view.visible = true
+	camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
 	status_label.text = sim.get_stats_text()
 	_generating = false
-	generate_button.disabled = false
+	_set_menu_busy(false)
+	if not silent:
+		generate_button.disabled = false
+
+
+## Enable/disable all interactive menu controls while a worker owns the
+## simulation. This prevents a climate edit or save action from racing the
+## generation thread.
+func _set_menu_busy(busy: bool) -> void:
+	if menu_root == null:
+		return
+	_set_menu_node_busy(menu_root, busy)
+
+
+func _set_menu_node_busy(node: Node, busy: bool) -> void:
+	if node is BaseButton:
+		(node as BaseButton).disabled = busy
+	elif node is LineEdit:
+		(node as LineEdit).editable = not busy
+	elif node is SpinBox:
+		(node as SpinBox).editable = not busy
+	elif node is Slider:
+		(node as Slider).editable = not busy
+	for child: Node in node.get_children():
+		_set_menu_node_busy(child, busy)
 
 
 ## refreshes the climate controls from Sim (after a map load)
@@ -196,6 +271,38 @@ func _refresh_climate_ui() -> void:
 	climate_precip_spin.set_value_no_signal(sim.climate_precipitation)
 	for i: int in mini(wind_spins.size(), sim.climate_winds.size()):
 		(wind_spins[i] as SpinBox).set_value_no_signal(float(sim.climate_winds[i]))
+
+
+func _refresh_menu_from_sim() -> void:
+	if seed_edit != null:
+		seed_edit.text = sim.seed_value
+	if template_option != null:
+		for i: int in template_option.item_count:
+			if str(template_option.get_item_metadata(i)) == sim.template_id:
+				template_option.select(i)
+				break
+		if density_option != null:
+			for i: int in density_option.item_count:
+				var density_id: int = int(density_option.get_item_id(i))
+				if POINTS_BY_DENSITY.has(density_id) and POINTS_BY_DENSITY[density_id] == sim.cells_desired:
+					density_option.select(i)
+					break
+	if cultures_spin != null:
+		cultures_spin.set_value_no_signal(sim.cultures_limit)
+	if cultures_set_option != null:
+		for i: int in cultures_set_option.item_count:
+			if str(cultures_set_option.get_item_metadata(i)) == sim.cultures_set:
+				cultures_set_option.select(i)
+				break
+	if states_spin != null:
+		states_spin.set_value_no_signal(sim.states_limit)
+	if religions_spin != null:
+		religions_spin.set_value_no_signal(sim.religions_limit)
+	if provinces_ratio_spin != null:
+		provinces_ratio_spin.set_value_no_signal(sim.provinces_ratio)
+	if burgs_check != null:
+		burgs_check.button_pressed = sim.burgs_limit < 0
+	_refresh_climate_ui()
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +335,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _apply_brush(_screen_pos: Vector2) -> void:
+	if _generating:
+		return
 	var world := get_global_mouse_position()
 	brush_world_pos = world
 	if sim.grid == null:
@@ -285,7 +394,7 @@ func _on_load_pressed() -> void:
 		var err: Error = sim.load_map(path)
 		if err == OK:
 			seed_edit.text = sim.seed_value
-			_refresh_climate_ui()
+			_refresh_menu_from_sim()
 			view.rebuild_cache()
 			camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
 			status_label.text = "Загружено: %s" % path
@@ -515,13 +624,29 @@ func _export_heightmap(path: String) -> void:
 	var spacing: float = grid.spacing
 	var cells_x: int = grid.cells_x
 	var cells_y: int = grid.cells_y
-	var last_idx: int = grid.h.size() - 1
 	for y: int in height:
-		var row: int = mini(int(float(y) / spacing), cells_y - 1)
 		for x: int in width:
-			var col: int = mini(int(float(x) / spacing), cells_x - 1)
-			var idx: int = mini(row * cells_x + col, last_idx)
-			data[y * width + x] = clampi(int(round(float(grid.h[idx]) * 2.55)), 0, 255)
+			# Grid points are jittered, so a simple row*width lookup produces
+			# visible diagonal bands in the export. Pick the nearest point from
+			# the local 3x3 lattice neighbourhood; this is the same Voronoi
+			# sampling used by the generated terrain rather than a stretched
+			# texture approximation.
+			var center_col: int = clampi(int(floor(float(x) / spacing)), 0, cells_x - 1)
+			var center_row: int = clampi(int(floor(float(y) / spacing)), 0, cells_y - 1)
+			var nearest: int = 0
+			var nearest_d2: float = INF
+			for row: int in range(maxi(center_row - 1, 0), mini(center_row + 2, cells_y)):
+				for col: int in range(maxi(center_col - 1, 0), mini(center_col + 2, cells_x)):
+					var candidate: int = row * cells_x + col
+					if candidate >= grid.points.size():
+						continue
+					var dx: float = grid.points[candidate].x - float(x)
+					var dy: float = grid.points[candidate].y - float(y)
+					var d2: float = dx * dx + dy * dy
+					if d2 < nearest_d2:
+						nearest_d2 = d2
+						nearest = candidate
+			data[y * width + x] = clampi(int(round(float(grid.h[nearest]) * 2.55)), 0, 255)
 	var img := Image.create_from_data(width, height, false, Image.FORMAT_R8, data)
 	if img == null:
 		status_label.text = "Ошибка создания изображения"
@@ -540,7 +665,10 @@ func _export_geojson(path: String) -> void:
 		return
 	var features: Array = []
 	for i: int in pack.cell_count():
-		var poly := pack.get_polygon(i)
+		# Voronoi boundary cells may extend beyond the canvas. GeoJSON should
+		# describe the same visible map as the renderer, not those construction
+		# triangles outside the map rectangle.
+		var poly: PackedVector2Array = FmgPaths.clip_poly(pack.get_polygon(i), sim.map_width, sim.map_height)
 		if poly.size() < 3:
 			continue
 		var ring: Array = []
@@ -651,8 +779,12 @@ func _build_ui() -> void:
 	# --- right sidebar ---
 	var panel := PanelContainer.new()
 	panel.name = "Sidebar"
-	panel.custom_minimum_size = Vector2(270, 0)
+	panel.custom_minimum_size = Vector2(320, 0)
 	panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
+	panel.add_theme_constant_override("margin_left", 10)
+	panel.add_theme_constant_override("margin_right", 10)
+	panel.add_theme_constant_override("margin_top", 8)
+	panel.add_theme_constant_override("margin_bottom", 8)
 	layer.add_child(panel)
 
 	var scroll := ScrollContainer.new()
@@ -663,6 +795,26 @@ func _build_ui() -> void:
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_theme_constant_override("separation", 8)
 	scroll.add_child(vbox)
+	menu_root = vbox
+
+	var title := Label.new()
+	title.text = "FANTASY MAP GENERATOR"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 17)
+	title.add_theme_color_override("font_color", Color("#e2bd5b"))
+	vbox.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "Генератор миров · меню"
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.add_theme_font_size_override("font_size", 11)
+	subtitle.add_theme_color_override("font_color", Color("#9ba7b8"))
+	vbox.add_child(subtitle)
+	var search := LineEdit.new()
+	search.placeholder_text = "Поиск по меню…"
+	search.clear_button_enabled = true
+	search.tooltip_text = "Спрячет неподходящие параметры и слои"
+	search.text_changed.connect(func(query: String) -> void: _filter_menu(vbox, query))
+	vbox.add_child(search)
 
 	# --- map section ---
 	vbox.add_child(_make_header("Карта"))
@@ -718,6 +870,20 @@ func _build_ui() -> void:
 	states_spin.max_value = 60
 	states_spin.value = sim.states_limit
 	vbox.add_child(_make_row("Государств", states_spin))
+
+	religions_spin = SpinBox.new()
+	religions_spin.min_value = 1
+	religions_spin.max_value = 24
+	religions_spin.value = sim.religions_limit
+	vbox.add_child(_make_row("Религий", religions_spin))
+
+	provinces_ratio_spin = SpinBox.new()
+	provinces_ratio_spin.min_value = 5.0
+	provinces_ratio_spin.max_value = 100.0
+	provinces_ratio_spin.step = 5.0
+	provinces_ratio_spin.value = sim.provinces_ratio
+	provinces_ratio_spin.tooltip_text = "Доля городов государства, ставших центрами провинций"
+	vbox.add_child(_make_row("Провинции %", provinces_ratio_spin))
 
 	burgs_check = CheckButton.new()
 	burgs_check.text = "Города: авто"
@@ -869,12 +1035,78 @@ func _build_ui() -> void:
 	camera.fit_to_map()
 
 
-func _make_header(text: String) -> Label:
-	var label := Label.new()
-	label.text = text
-	label.add_theme_font_size_override("font_size", 15)
-	label.add_theme_color_override("font_color", Color("#c8a24a"))
-	return label
+func _make_header(text: String) -> Button:
+	var header := Button.new()
+	header.text = "▾  " + text
+	header.tooltip_text = "Свернуть или развернуть раздел"
+	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	header.toggle_mode = true
+	header.button_pressed = true
+	header.set_meta("menu_section_header", true)
+	header.set_meta("menu_section_title", text)
+	header.set_meta("menu_section_open", true)
+	header.custom_minimum_size = Vector2(0, 30)
+	header.add_theme_font_size_override("font_size", 15)
+	header.add_theme_color_override("font_color", Color("#c8a24a"))
+	header.toggled.connect(_on_section_toggled.bind(header))
+	return header
+
+
+func _on_section_toggled(open: bool, header: Button) -> void:
+	header.set_meta("menu_section_open", open)
+	header.text = ("▾  " if open else "▸  ") + str(header.get_meta("menu_section_title", "Раздел"))
+	var parent := header.get_parent()
+	if parent == null:
+		return
+	var index: int = header.get_index() + 1
+	while index < parent.get_child_count():
+		var child: Control = parent.get_child(index) as Control
+		if child != null and child.get_meta("menu_section_header", false):
+			break
+		if child != null:
+			child.visible = open
+		index += 1
+
+
+func _filter_menu(root: VBoxContainer, query: String) -> void:
+	var needle: String = query.strip_edges().to_lower()
+	var section_open: bool = true
+	for child_node: Node in root.get_children():
+		var child: Control = child_node as Control
+		if child == null:
+			continue
+		if child.get_meta("menu_section_header", false):
+			section_open = bool(child.get_meta("menu_section_open", true))
+			child.visible = true
+			continue
+		if child == root.get_child(0) or child == root.get_child(1) or child == root.get_child(2):
+			child.visible = true
+			continue
+		if needle.is_empty():
+			child.visible = section_open
+		else:
+			child.visible = _menu_text(child).to_lower().contains(needle)
+
+
+func _menu_text(node: Node) -> String:
+	var result: String = ""
+	if node is Label:
+		result += (node as Label).text
+	elif node is Button:
+		result += (node as Button).text
+	elif node is LineEdit:
+		result += (node as LineEdit).text + " " + (node as LineEdit).placeholder_text
+	elif node is OptionButton:
+		var option := node as OptionButton
+		for i: int in option.item_count:
+			result += " " + option.get_item_text(i)
+	elif node is SpinBox:
+		result += (node as SpinBox).tooltip_text
+	if node is Control:
+		result += " " + (node as Control).tooltip_text
+	for child: Node in node.get_children():
+		result += " " + _menu_text(child)
+	return result
 
 
 func _make_climate_spin(parent: Control, label_text: String, min_value: float, max_value: float, step: float, initial: float, on_change: Callable) -> SpinBox:
