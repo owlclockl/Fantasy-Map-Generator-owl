@@ -1947,19 +1947,15 @@ func _draw_coordinates() -> void:
 		# legacy maps without a saved geography: derive the span from the aspect
 		lon_t = minf(sim.map_width / sim.map_height * lat_t, 360.0)
 	var lon_w: float = sim.lon_w if sim.lon_t > 0.0 else -lon_t / 2.0
+	# The original picks the nearest step to lonT / viewport.scale / 10, so the
+	# graticule gets finer while zooming in and coarser on a whole-world map
+	# (draw-coordinates.ts, STEPS)
 	var steps: Array = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0]
-	var goal: float = lat_t / 12.0
-	var lon_goal: float = lon_t / 12.0
-	var step: float = 30.0
+	var goal: float = lon_t / maxf(camera_zoom(), 0.05) / 10.0
+	var step: float = float(steps[0])
 	for candidate: float in steps:
 		if absf(candidate - goal) < absf(step - goal):
 			step = candidate
-	# a narrow map needs a finer grid, otherwise it would show one lonely line
-	var step_lon: float = 30.0
-	for candidate: float in steps:
-		if absf(candidate - lon_goal) < absf(step_lon - lon_goal):
-			step_lon = candidate
-	step_lon = minf(step_lon, step)
 	var col := Color(0.12, 0.2, 0.33, 0.55)
 	var segments := PackedVector2Array()
 	var labels: Array = []
@@ -1970,13 +1966,13 @@ func _draw_coordinates() -> void:
 		segments.append(Vector2(sim.map_width, y))
 		labels.append({"text": FmgCoordinates.format_latitude(lat), "pos": Vector2(0.0, y)})
 		lat += step
-	var lon: float = ceilf(lon_w / step_lon) * step_lon
+	var lon: float = ceilf(lon_w / step) * step
 	while lon <= lon_w + lon_t + 0.001:
 		var x: float = (lon - lon_w) / lon_t * sim.map_width
 		segments.append(Vector2(x, 0))
 		segments.append(Vector2(x, sim.map_height))
 		labels.append({"text": FmgCoordinates.format_longitude(lon), "pos": Vector2(x, 0.0)})
-		lon += step_lon
+		lon += step
 	if not segments.is_empty():
 		draw_multiline(segments, col, 0.5, true)
 	var font_to_use: Font = _font_sans if _font_sans != null else _font
