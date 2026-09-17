@@ -1,0 +1,2 @@
+# Godot must not import these files: they are raw 8-bit grayscale data,
+# and the importer would turn them into textures with their own pipeline.

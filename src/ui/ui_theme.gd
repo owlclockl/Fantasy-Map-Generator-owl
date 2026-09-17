@@ -4,16 +4,23 @@ extends RefCounted
 ## Translucent frosted glass materials, specular rim highlights, smooth continuous
 ## rounded corners, diffused elevation shadows, modern San Francisco / system sans-serif
 ## typography, and vibrant dynamic accent colors derived from theme_color.
+##
+## Text rendering is configured for sharpness: the fonts are hinted and snapped to
+## whole pixels (blurry, subpixel-positioned glyphs on a translucent panel were the
+## main readability complaint), and the panels keep enough contrast to stay legible
+## in front of the map.
 
 signal changed
 
 # Apple system accent defaults
 const DEFAULT_THEME_COLOR := Color("#4b70f5") # Apple vibrant blue/indigo
-const DEFAULT_TRANSPARENCY := 14.0 # percent of transparency for frosted glass
+const DEFAULT_TRANSPARENCY := 8.0 # percent of transparency for frosted glass
 const BORDER_COLOR := Color(1.0, 1.0, 1.0, 0.22) # specular glass rim
-const TEXT_COLOR := Color("#f5f6fa") # crisp modern readable text
-const TIP_COLOR := Color("#9ca3af") # subtle muted gray for tips/subtitles
+const TEXT_COLOR := Color("#f7f8fb") # crisp modern readable text
+const TIP_COLOR := Color("#c2c9d6") # muted but still readable gray for tips/subtitles
 const HEADER_COLOR := Color("#ffffff")
+const BASE_FONT_SIZE := 13
+const SMALL_FONT_SIZE := 12
 
 var theme_color: Color = DEFAULT_THEME_COLOR
 var transparency: float = DEFAULT_TRANSPARENCY
@@ -62,8 +69,12 @@ static func font_ui() -> Font:
 			"SF Pro Display", "SF Pro Text", "-apple-system", "BlinkMacSystemFont",
 			"Inter", "Helvetica Neue", "Segoe UI", "DejaVu Sans", "Noto Sans", "system-ui", "sans-serif"
 		])
-		system.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_AUTO
+		# Interface text is never rotated or scaled by a camera, so hinted glyphs
+		# snapped to whole pixels are the crispest option (subpixel positioning
+		# makes small bold text look soft on translucent panels).
+		system.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
 		system.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
+		system.hinting = TextServer.HINTING_LIGHT
 		if ThemeDB.fallback_font != null:
 			system.fallbacks = [ThemeDB.fallback_font]
 		_ui_font = system
@@ -78,8 +89,9 @@ static func mono() -> Font:
 			"SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", "Liberation Mono",
 			"Noto Sans Mono", "Courier New", "Monospace"
 		])
-		system.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_AUTO
+		system.subpixel_positioning = TextServer.SUBPIXEL_POSITIONING_DISABLED
 		system.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
+		system.hinting = TextServer.HINTING_LIGHT
 		if ThemeDB.fallback_font != null:
 			system.fallbacks = [ThemeDB.fallback_font]
 		_mono_font = system
@@ -94,8 +106,9 @@ func set_theme(color: Color, transparency_value: float) -> void:
 	theme_color = color
 	transparency = clampf(transparency_value, 0.0, 90.0)
 
-	# Frosted glass opacity factor
-	var base_alpha: float = clampf(1.0 - (transparency / 100.0) * 0.65, 0.45, 0.94)
+	# Frosted glass opacity factor (kept high enough for text to stay readable on
+	# top of a busy map)
+	var base_alpha: float = clampf(1.0 - (transparency / 100.0) * 0.55, 0.62, 0.97)
 
 	# Deep Apple dark frosted glass tint, infused with subtle theme hue
 	var dark_glass_base := Color(0.10, 0.12, 0.16, base_alpha)
@@ -289,7 +302,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_color", TEXT_COLOR)
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"button":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -305,7 +318,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("icon_normal_color", TEXT_COLOR)
 				node.add_theme_color_override("icon_hover_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"tab":
 			if node is Button:
 				# Unselected segment
@@ -318,7 +331,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"tab_active":
 			if node is Button:
 				# Selected elevated glass segment
@@ -331,7 +344,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"sticked":
 			if node is Button:
 				node.focus_mode = Control.FOCUS_NONE
@@ -343,7 +356,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 11)
+				node.add_theme_font_size_override("font_size", SMALL_FONT_SIZE)
 		"accent":
 			if node is Button:
 				# Apple vibrant call-to-action button
@@ -356,7 +369,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"layer":
 			if node is Button:
 				# Inactive layer toggle chip
@@ -369,7 +382,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 11)
+				node.add_theme_font_size_override("font_size", SMALL_FONT_SIZE)
 		"layer_active":
 			if node is Button:
 				# Active illuminated layer toggle chip
@@ -382,7 +395,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_hover_color", Color.WHITE)
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 11)
+				node.add_theme_font_size_override("font_size", SMALL_FONT_SIZE)
 		"field":
 			if node is LineEdit:
 				node.add_theme_stylebox_override("normal", glass_box(bg_input, border_subtle, 1, 8, 8.0, 5.0))
@@ -391,7 +404,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_color", Color.WHITE)
 				node.add_theme_color_override("font_placeholder_color", Color(0.55, 0.60, 0.68, 0.65))
 				node.add_theme_font_override("font", mono())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 			elif node is SpinBox:
 				node.add_theme_stylebox_override("up_background", glass_box(Color.TRANSPARENT))
 				node.add_theme_stylebox_override("down_background", glass_box(Color.TRANSPARENT))
@@ -400,7 +413,7 @@ func _style_control(node: Control, kind: String) -> void:
 				line.add_theme_stylebox_override("focus", glass_box(bg_input_focus, accent_main, 1, 8, 8.0, 5.0, 6, Vector2.ZERO, accent_glow))
 				line.add_theme_color_override("font_color", Color.WHITE)
 				line.add_theme_font_override("font", mono())
-				line.add_theme_font_size_override("font_size", 12)
+				line.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"select":
 			if node is OptionButton:
 				node.add_theme_stylebox_override("normal", glass_box(bg_button, border_subtle, 1, 8, 10.0, 5.0))
@@ -412,7 +425,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("font_pressed_color", Color.WHITE)
 				node.add_theme_color_override("icon_normal_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"check":
 			if node is BaseButton:
 				node.add_theme_color_override("font_color", TEXT_COLOR)
@@ -422,7 +435,7 @@ func _style_control(node: Control, kind: String) -> void:
 				node.add_theme_color_override("icon_hover_color", Color.WHITE)
 				node.add_theme_color_override("icon_pressed_color", Color.WHITE)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"slider":
 			if node is Slider:
 				node.add_theme_stylebox_override("slider", glass_box(Color(1, 1, 1, 0.16), Color.TRANSPARENT, 0, 3, 0.0, 0.0))
@@ -433,22 +446,22 @@ func _style_control(node: Control, kind: String) -> void:
 			if node is Label:
 				node.add_theme_color_override("font_color", TEXT_COLOR)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"section_header":
 			if node is Label:
 				node.add_theme_color_override("font_color", HEADER_COLOR)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"tip":
 			if node is Label:
 				node.add_theme_color_override("font_color", TIP_COLOR)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 11)
+				node.add_theme_font_size_override("font_size", SMALL_FONT_SIZE)
 		"sep":
 			if node is Label:
 				node.add_theme_color_override("font_color", dark_solid)
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)
 		"scroll":
 			if node is ScrollContainer:
 				node.add_theme_stylebox_override("panel", glass_box(Color.TRANSPARENT))
@@ -456,4 +469,4 @@ func _style_control(node: Control, kind: String) -> void:
 			if node is Label:
 				node.add_theme_color_override("font_color", Color(0.85, 0.89, 0.98))
 				node.add_theme_font_override("font", font_ui())
-				node.add_theme_font_size_override("font_size", 12)
+				node.add_theme_font_size_override("font_size", BASE_FONT_SIZE)

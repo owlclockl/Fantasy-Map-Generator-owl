@@ -18,10 +18,23 @@ const SAVE_FORMAT: int = 1
 
 # --- options (options-model.ts defaults) ---
 var seed_value: String = "1000"
-var template_id: String = "continents" # or "random"
+var template_id: String = "continents" # or "random", or a pre-created heightmap id
+## Concrete template of the last generation: "random" is rolled into a real id
+## here, so the geography and the lakes know which world they belong to.
+var resolved_template_id: String = "continents"
 var cells_desired: int = 10000
 var map_width: float = 1280.0
 var map_height: float = 800.0
+
+# --- geography: where the map sits on the globe (coordinates.gd) ---
+## `geo_auto` keeps the whole position on auto; a `geo_map_size` < 0 with auto
+## off means "no size was requested" and still falls back to the rolled one.
+## The roll itself always runs (see `_stage_geography`) so the random stream
+## stays identical to the original.
+var geo_auto: bool = true
+var geo_map_size: float = -1.0
+var geo_latitude: float = 50.0
+var geo_longitude: float = 50.0
 
 var climate_equator: float = 27.0
 var climate_north_pole: float = -30.0
@@ -31,6 +44,9 @@ var climate_winds: Array = [225.0, 45.0, 225.0, 315.0, 135.0, 315.0]
 var lat_n: float = 90.0
 var lat_s: float = -90.0
 var lat_t: float = 180.0
+var lon_t: float = 360.0
+var lon_w: float = -180.0
+var lon_e: float = 180.0
 
 var cultures_limit: int = 12
 var cultures_set: String = "world"
@@ -79,6 +95,7 @@ func get_generation_options() -> Dictionary:
 	return {
 		"seed": seed_value,
 		"template": template_id,
+		"resolvedTemplate": resolved_template_id,
 		"cellsDesired": cells_desired,
 		"mapWidth": map_width,
 		"mapHeight": map_height,
@@ -87,9 +104,16 @@ func get_generation_options() -> Dictionary:
 		"climateSouthPole": climate_south_pole,
 		"climatePrecipitation": climate_precipitation,
 		"climateWinds": climate_winds.duplicate(),
+		"geoAuto": geo_auto,
+		"geoMapSize": geo_map_size,
+		"geoLatitude": geo_latitude,
+		"geoLongitude": geo_longitude,
 		"latN": lat_n,
 		"latS": lat_s,
 		"latT": lat_t,
+		"lonT": lon_t,
+		"lonW": lon_w,
+		"lonE": lon_e,
 		"cultures": cultures_limit,
 		"culturesSet": cultures_set,
 		"states": states_limit,
@@ -116,9 +140,17 @@ func apply_generation_options(options: Dictionary) -> void:
 	climate_south_pole = float(options.get("climateSouthPole", climate_south_pole))
 	climate_precipitation = float(options.get("climatePrecipitation", climate_precipitation))
 	climate_winds = (options.get("climateWinds", climate_winds) as Array).duplicate()
+	geo_auto = bool(options.get("geoAuto", geo_auto))
+	geo_map_size = float(options.get("geoMapSize", geo_map_size))
+	geo_latitude = float(options.get("geoLatitude", geo_latitude))
+	geo_longitude = float(options.get("geoLongitude", geo_longitude))
+	lon_t = float(options.get("lonT", lon_t))
+	lon_w = float(options.get("lonW", lon_w))
+	lon_e = float(options.get("lonE", lon_e))
 	lat_n = float(options.get("latN", lat_n))
 	lat_s = float(options.get("latS", lat_s))
 	lat_t = float(options.get("latT", lat_t))
+	resolved_template_id = str(options.get("resolvedTemplate", resolved_template_id))
 	cultures_limit = int(options.get("cultures", cultures_limit))
 	cultures_set = str(options.get("culturesSet", cultures_set))
 	states_limit = int(options.get("states", states_limit))
@@ -156,6 +188,7 @@ func pipeline() -> Array:
 		["Граф", func() -> void: _stage_grid()],
 		["Рельеф", func() -> void: _stage_heightmap()],
 		["Океаны и озёра", func() -> void: _stage_markup_grid()],
+		["География", func() -> void: _stage_geography()],
 		["Температура", func() -> void: _stage_climate()],
 		["Осадки", func() -> void: _stage_precipitation()],
 		["Упаковка графа", func() -> void: _stage_pack()],
@@ -191,18 +224,64 @@ func _stage_heightmap() -> void:
 	var template: String = template_id
 	if template == "random":
 		template = HeightmapGenerator.get_random_template_id(rng)
+	resolved_template_id = template
 	var generator := HeightmapGenerator.new()
-	generator.from_template(grid, template, cells_desired, map_width, map_height, rng)
+	if HeightmapTemplates.is_precreated(template):
+		generator.from_precreated(grid, template, cells_desired, map_width, map_height, rng)
+	else:
+		generator.from_template(grid, template, cells_desired, map_width, map_height, rng)
 	grid.h = generator.heights
 
 
 func _stage_markup_grid() -> void:
 	FmgFeatures.markup_grid(grid)
 	GridGenerator.add_deep_depression_lakes(grid, rng, lake_elevation_limit)
-	GridGenerator.open_near_sea_lakes(grid, template_id == "atoll")
+	GridGenerator.open_near_sea_lakes(grid, resolved_template_id == "atoll")
+
+
+## Where the map lies on the globe. Runs once per full generation (the
+## original's "mapSize" step): the template provides the size and the position,
+## the derived lat/lon box then feeds temperature, precipitation and the grid.
+func _stage_geography() -> void:
+	# The original always rolls the size and position, even when the user has
+	# pinned the values: the random stream advances exactly the same way in both
+	# cases, so a seed keeps matching the browser build. The roll is only applied
+	# when the position is on auto.
+	var position: Array = FmgCoordinates.resolve(
+		resolved_template_id, FmgCoordinates.is_partial(grid.features), rng
+	)
+	if geo_auto or geo_map_size <= 0.0:
+		geo_map_size = float(position[0])
+		geo_latitude = float(position[1])
+		geo_longitude = float(position[2])
+	recalculate_geography()
+
+
+## Re-derive the lat/lon box from the requested size and position without
+## rolling anything. Safe to call before any climate recalculation.
+func recalculate_geography() -> void:
+	var box: Dictionary = FmgCoordinates.calculate(
+		maxf(geo_map_size, 1.0), geo_latitude, geo_longitude, map_width, map_height
+	)
+	lat_t = float(box["latT"])
+	lat_n = float(box["latN"])
+	lat_s = float(box["latS"])
+	lon_t = float(box["lonT"])
+	lon_w = float(box["lonW"])
+	lon_e = float(box["lonE"])
+
+
+## Human-readable position of the map for the interface
+func geography_text() -> String:
+	return FmgCoordinates.describe({
+		"latN": lat_n, "latS": lat_s, "lonW": lon_w, "lonE": lon_e
+	})
 
 
 func _stage_climate() -> void:
+	# a manual geography change must reach the temperature without a full
+	# regeneration; this only recomputes the box from the current values
+	recalculate_geography()
 	climate().generate_temperature(grid)
 
 
@@ -365,15 +444,32 @@ func _stage_journeys() -> void:
 	journeys.generate(3)
 
 
+## Stages that belong to a full generation only. The geography roll must not
+## repeat when a tail is recomputed: it consumes the random stream, so a brush
+## stroke would silently move the map to another latitude (the original has the
+## same split — Coordinates.generate() lives in the main pipeline, while a
+## manual geography change only calls calculate()).
+const GENERATION_ONLY_STAGES: Array = ["География"]
+
+
+func _tail_from(index: int) -> Array:
+	var stages: Array = []
+	for stage: Array in pipeline().slice(index):
+		if str(stage[0]) in GENERATION_ONLY_STAGES:
+			continue
+		stages.append(stage)
+	return stages
+
+
 ## regenerates everything downstream of the heightmap (after a height edit)
 func pipeline_from_heightmap() -> Array:
-	return pipeline().slice(2)
+	return _tail_from(2)
 
 
 ## regenerates everything downstream of the climate (after a climate edit):
 ## temperature, precipitation, pack graph and all layers above it
 func pipeline_from_climate() -> Array:
-	return pipeline().slice(3)
+	return _tail_from(3)
 
 
 ## run a single pipeline stage; main.gd drives the loop (one stage per couple
@@ -435,7 +531,13 @@ func save_map(path: String) -> Error:
 		"climate": {
 			"equator": climate_equator, "northPole": climate_north_pole,
 			"southPole": climate_south_pole, "precipitation": climate_precipitation,
-			"winds": climate_winds, "latN": lat_n, "latS": lat_s, "latT": lat_t
+			"winds": climate_winds, "latN": lat_n, "latS": lat_s, "latT": lat_t,
+			"lonT": lon_t, "lonW": lon_w, "lonE": lon_e
+		},
+		"geography": {
+			"auto": geo_auto, "mapSize": geo_map_size,
+			"latitude": geo_latitude, "longitude": geo_longitude,
+			"template": resolved_template_id
 		},
 		"limits": {
 			"cultures": cultures_limit, "culturesSet": cultures_set,
@@ -580,6 +682,17 @@ func load_map(path: String) -> Error:
 	lat_n = float(climate_data.get("latN", 90.0))
 	lat_s = float(climate_data.get("latS", -90.0))
 	lat_t = float(climate_data.get("latT", 180.0))
+	lon_t = float(climate_data.get("lonT", 360.0))
+	lon_w = float(climate_data.get("lonW", -180.0))
+	lon_e = float(climate_data.get("lonE", 180.0))
+	var geography_data: Dictionary = data.get("geography", {})
+	geo_auto = bool(geography_data.get("auto", geo_auto))
+	geo_map_size = float(geography_data.get("mapSize", geo_map_size))
+	geo_latitude = float(geography_data.get("latitude", geo_latitude))
+	geo_longitude = float(geography_data.get("longitude", geo_longitude))
+	resolved_template_id = str(geography_data.get("template", resolved_template_id))
+	if resolved_template_id.is_empty() or resolved_template_id == "random":
+		resolved_template_id = template_id
 	var limits: Dictionary = data.get("limits", {})
 	cultures_limit = int(limits.get("cultures", 12))
 	cultures_set = str(limits.get("culturesSet", "world"))

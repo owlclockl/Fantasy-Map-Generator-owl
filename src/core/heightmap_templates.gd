@@ -167,6 +167,48 @@ const TEMPLATES := {
 }
 
 
+## Pre-created heightmaps of the original (data/precreated-heightmaps.ts):
+## real-world terrains stored as grayscale images in data/heightmaps/. Their
+## geography (size and position on the globe) comes from FmgCoordinates.
+const PRECREATED := {
+	"africa-centric": {"id": 0, "name": "Africa Centric", "nameRu": "Африка", "file": "africa-centric.png"},
+	"arabia": {"id": 1, "name": "Arabia", "nameRu": "Аравия", "file": "arabia.png"},
+	"atlantics": {"id": 2, "name": "Atlantics", "nameRu": "Атлантика", "file": "atlantics.png"},
+	"britain": {"id": 3, "name": "Britain", "nameRu": "Британия", "file": "britain.png"},
+	"caribbean": {"id": 4, "name": "Caribbean", "nameRu": "Карибы", "file": "caribbean.png"},
+	"east-asia": {"id": 5, "name": "East Asia", "nameRu": "Восточная Азия", "file": "east-asia.png"},
+	"eurasia": {"id": 6, "name": "Eurasia", "nameRu": "Евразия", "file": "eurasia.png"},
+	"europe": {"id": 7, "name": "Europe", "nameRu": "Европа", "file": "europe.png"},
+	"europe-accented": {"id": 8, "name": "Europe Accented", "nameRu": "Европа (рельефная)", "file": "europe-accented.png"},
+	"europe-and-central-asia": {"id": 9, "name": "Europe and Central Asia", "nameRu": "Европа и Средняя Азия", "file": "europe-and-central-asia.png"},
+	"europe-central": {"id": 10, "name": "Europe Central", "nameRu": "Центральная Европа", "file": "europe-central.png"},
+	"europe-north": {"id": 11, "name": "Europe North", "nameRu": "Северная Европа", "file": "europe-north.png"},
+	"greenland": {"id": 12, "name": "Greenland", "nameRu": "Гренландия", "file": "greenland.png"},
+	"hellenica": {"id": 13, "name": "Hellenica", "nameRu": "Эллада", "file": "hellenica.png"},
+	"iceland": {"id": 14, "name": "Iceland", "nameRu": "Исландия", "file": "iceland.png"},
+	"indian-ocean": {"id": 15, "name": "Indian Ocean", "nameRu": "Индийский океан", "file": "indian-ocean.png"},
+	"mediterranean-sea": {"id": 16, "name": "Mediterranean Sea", "nameRu": "Средиземное море", "file": "mediterranean-sea.png"},
+	"middle-east": {"id": 17, "name": "Middle East", "nameRu": "Ближний Восток", "file": "middle-east.png"},
+	"north-america": {"id": 18, "name": "North America", "nameRu": "Северная Америка", "file": "north-america.png"},
+	"us-centric": {"id": 19, "name": "US-centric", "nameRu": "США (весь мир)", "file": "us-centric.png"},
+	"us-mainland": {"id": 20, "name": "US Mainland", "nameRu": "США", "file": "us-mainland.png"},
+	"world": {"id": 21, "name": "World", "nameRu": "Мир", "file": "world.png"},
+	"world-from-pacific": {"id": 22, "name": "World from Pacific", "nameRu": "Мир от Пацифики", "file": "world-from-pacific.png"}
+}
+const PRECREATED_DIR := "res://data/heightmaps/"
+
+
+static func is_precreated(id: String) -> bool:
+	return PRECREATED.has(id)
+
+
+## Full path of the grayscale image behind a pre-created heightmap
+static func precreated_file(id: String) -> String:
+	if not PRECREATED.has(id):
+		return ""
+	return PRECREATED_DIR + str(PRECREATED[id]["file"])
+
+
 static func get_template(id: String) -> String:
 	if TEMPLATES.has(id):
 		return TEMPLATES[id]["template"]
@@ -177,4 +219,17 @@ static func get_template(id: String) -> String:
 static func template_name(id: String) -> String:
 	if TEMPLATES.has(id):
 		return TEMPLATES[id]["name"]
+	if PRECREATED.has(id):
+		var entry: Dictionary = PRECREATED[id]
+		var russian: String = str(entry.get("nameRu", ""))
+		return russian if not russian.is_empty() else str(entry["name"])
 	return id
+
+
+## Number of the pre-created heightmaps whose image is present on disk
+static func precreated_available() -> int:
+	var found: int = 0
+	for id: String in PRECREATED:
+		if FileAccess.file_exists(precreated_file(id)):
+			found += 1
+	return found

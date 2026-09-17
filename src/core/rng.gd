@@ -9,19 +9,30 @@ var _s0: float = 0.0
 var _s1: float = 0.0
 var _s2: float = 0.0
 var _c: int = 1
+## Alea's mash keeps its 32-bit state *between* calls (the original creates one
+## masher per generator and reuses it eight times while seeding)
+var _mash_state: float = 0.0
 
 
-## Port of Alea's mash(): n += charCode; h = K*n; n = h>>>0; h -= n; h *= n; n = h>>>0
-static func _mash(data: String) -> float:
-	var n: int = 0xefc8249d
+## Port of Alea's Mash 0.9 (alea/alea.js):
+##   n += charCode; h = K*n; n = h>>>0; h -= n; h *= n; n = h>>>0; h -= n;
+##   n += h * 2^32;  return (n>>>0) * 2^-32
+func _mash(data: String) -> float:
 	for i: int in data.length():
-		n = (n + data.unicode_at(i)) & 0xFFFFFFFF
-		var h: float = 0.02519603282416938 * float(n)
-		var ni: int = int(h) & 0xFFFFFFFF # h >>> 0
-		var hf: float = h - float(ni)
-		hf *= float(ni)
-		n = int(hf) & 0xFFFFFFFF
-	return (float(n) + 16777216.0) * 2.3283064365386963e-10 # (n + 2^24) * 2^-32
+		_mash_state += float(data.unicode_at(i))
+		var h: float = 0.02519603282416938 * _mash_state
+		_mash_state = float(_to_uint32(h))
+		h -= _mash_state
+		h *= _mash_state
+		_mash_state = float(_to_uint32(h))
+		h -= _mash_state
+		_mash_state += h * 4294967296.0 # * 2^32
+	return float(_to_uint32(_mash_state)) * 2.3283064365386963e-10 # * 2^-32
+
+
+## JavaScript's `value >>> 0`: truncate towards zero, then wrap into 32 bits
+static func _to_uint32(value: float) -> int:
+	return int(value) & 0xFFFFFFFF
 
 
 func _init(seed_value: String = "0") -> void:
@@ -29,7 +40,8 @@ func _init(seed_value: String = "0") -> void:
 
 
 func reseed(seed_value: String) -> void:
-	# mash(' ') three times, then subtract mash(seed) — exactly like Alea
+	# Alea: mash(' ') three times, then subtract mash(seed) from each state
+	_mash_state = float(0xefc8249d)
 	_s0 = _mash(" ")
 	_s1 = _mash(" ")
 	_s2 = _mash(" ")
@@ -61,12 +73,17 @@ func randf() -> float:
 	return random()
 
 
+## FMG rand(min, max) with float bounds: Math.floor(random() * (max - min + 1)) + min
+func rand_f(min_v: float, max_v: float) -> float:
+	return floorf(random() * (max_v - min_v + 1.0)) + min_v
+
+
 ## FMG rand(min, max): random INTEGER in [min, max]; rand(n) means [0, n]
 func rand(min_v: int, max_v: int = -1) -> int:
 	if max_v < 0:
 		max_v = min_v
 		min_v = 0
-	return int(random() * float(max_v - min_v + 1)) + min_v
+	return int(rand_f(float(min_v), float(max_v)))
 
 
 ## FMG P(probability): true with the given probability
@@ -87,17 +104,18 @@ func range_f(min_v: float, max_v: float) -> float:
 	return min_v + random() * (max_v - min_v)
 
 
-## FMG rw(object): random key weighted by value
+## FMG rw(object): random key weighted by value. The original expands the
+## weights into a plain array and picks one element, so we do the same — the
+## uniform draw maps to the same key as in the browser build.
 func rw(weights: Dictionary) -> String:
-	var total: float = 0.0
-	for k: String in weights:
-		total += float(weights[k])
-	var roll: float = random() * total
-	for k: String in weights:
-		roll -= float(weights[k])
-		if roll <= 0.0:
-			return k
-	return weights.keys().back()
+	var pool: Array[String] = []
+	for k: Variant in weights:
+		var weight: int = int(weights[k])
+		for _i: int in maxi(weight, 0):
+			pool.append(String(k))
+	if pool.is_empty():
+		return ""
+	return pool[int(random() * float(pool.size()))]
 
 
 ## FMG biased(min, max, ex): integer biased towards min by exponent
@@ -105,32 +123,45 @@ func biased(min_v: int, max_v: int, ex: float) -> int:
 	return int(round(float(min_v) + float(max_v - min_v) * pow(random(), ex)))
 
 
-## FMG gauss(expected, deviation, min, max, round): clamped gaussian
+## FMG gauss(expected, deviation, min, max, round): a clamped gaussian rounded
+## to `round` decimals. Same algorithm as the original, which wraps d3-random's
+## randomNormal (Marsaglia polar method, rejecting samples outside the unit
+## circle) in minmax() and rn() — so the random stream stays in step.
 func gauss(expected: float = 100.0, deviation: float = 30.0, min_v: float = 0.0, max_v: float = 300.0, round_to: int = 0) -> float:
-	var u1: float = maxf(random(), 1e-12)
-	var u2: float = random()
-	var g: float = sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2)
-	var value: float = clampf(expected + g * deviation, min_v, max_v)
-	if round_to > 0:
-		var m: float = pow(10.0, round_to)
-		return roundf(value * m) / m
-	return value
+	var x: float = 0.0
+	var y: float = 0.0
+	var r: float = 0.0
+	while true:
+		x = random() * 2.0 - 1.0
+		y = random() * 2.0 - 1.0
+		r = x * x + y * y
+		if r != 0.0 and r <= 1.0:
+			break
+	var normal: float = y * sqrt(-2.0 * log(r) / r)
+	return rn(clampf(expected + normal * deviation, min_v, max_v), round_to)
 
 
-## FMG getNumberInRange("3-5" | "2" | "0.5"): parses count ranges of the heightmap templates
+## FMG getNumberInRange("3-5" | "2" | "0.5" | "-3"): parses the count ranges
+## of the heightmap templates. Numbers keep their fractional part, a leading
+## minus signs the lower bound ("-1-3" means rand(-1, 3)).
 func get_number_in_range(r: String) -> float:
-	var trimmed := r.strip_edges()
-	var slash := trimmed.split("-")
-	if slash.size() != 2:
-		var whole: float = trimmed.to_float()
-		var fl: float = floorf(whole)
-		return fl + (1.0 if P(whole - fl) else 0.0)
-	var sign_mult: float = -1.0 if trimmed.begins_with("-") else 1.0
-	var body := trimmed.substr(1) if trimmed.begins_with("-") else trimmed
+	var text := r.strip_edges()
+	if text.is_valid_float():
+		var whole: float = text.to_float()
+		var truncated: float = float(int(whole)) # JS ~~ truncates towards zero
+		return truncated + (1.0 if P(whole - truncated) else 0.0)
+	var sign_mult: float = -1.0 if text.begins_with("-") else 1.0
+	var body := text.substr(1) if text.begins_with("-") else text
+	if body.is_empty():
+		return 0.0
+	if not body.substr(0, 1).is_valid_float(): # the original drops a non-numeric head
+		body = body.substr(1)
+	if not body.contains("-"):
+		return 0.0
 	var parts := body.split("-")
-	var a: float = parts[0].to_float() * sign_mult
-	var b: float = parts[1].to_float()
-	var count: float = float(rand(int(a), int(b)))
+	if parts.size() < 2 or not parts[1].is_valid_float():
+		return 0.0
+	var count: float = rand_f(parts[0].to_float() * sign_mult, parts[1].to_float())
 	if count < 0.0:
 		return 0.0
 	return count

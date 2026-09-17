@@ -15,6 +15,14 @@ var _generation_thread: Thread = null
 var _generation_worker: FmgGenerationWorker = null
 var _preview_output: String = "" # --preview <path>: software-render a PNG after generation
 
+# The project is designed on a 1680×960 canvas; the window scales the interface
+# from there (stretch mode "canvas_items"), and this extra factor lets the user
+# make the UI even bigger on dense screens.
+enum UiScaleMode { AUTO = 0, MANUAL = 1 }
+var ui_scale_mode: int = UiScaleMode.AUTO
+var ui_scale_value: float = 1.0
+var _settings_loaded: bool = false
+
 # brush state
 var brush_active: bool = false
 var brush_world_pos := Vector2.ZERO
@@ -24,6 +32,18 @@ var _generating: bool = false
 
 
 func _ready() -> void:
+	# Rasterize fonts at the real output resolution: without this the interface
+	# and the map lettering are magnified blurs on HiDPI screens and at zoom.
+	var viewport := get_viewport()
+	if viewport != null:
+		viewport.oversampling = true
+	var window := get_window()
+	if window != null:
+		window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+		if not window.size_changed.is_connected(_on_window_resized):
+			window.size_changed.connect(_on_window_resized)
+
 	sim = get_node("/root/Sim") as FmgSim
 	view = MapView.new()
 	view.sim = sim
@@ -35,6 +55,7 @@ func _ready() -> void:
 	add_child(camera)
 
 	_build_ui()
+	_load_settings()
 
 	var user_args := OS.get_cmdline_user_args()
 	var preview_index: int = user_args.find("--preview")
@@ -77,6 +98,28 @@ func _run_headless_smoke() -> void:
 	# a manual NOTIFICATION_DRAW runs the whole _draw path even headlessly
 	view.notification(CanvasItem.NOTIFICATION_DRAW)
 	print("[smoke] draw path exercised")
+	# geography: the map's place on the globe is what makes the climate match
+	# the original (Britain is 7 % of the world at 51° N, Iceland 2 % at 55°)
+	print("[geo] template=", sim.template_id, " resolved=", sim.resolved_template_id,
+		" auto=", sim.geo_auto, " size=", sim.geo_map_size,
+		" lat_shift=", sim.geo_latitude, " lon_shift=", sim.geo_longitude)
+	print("[geo] box=", sim.geography_text(), " (latT=", sim.lat_t, " lonT=", sim.lon_t, ")")
+	print("[geo] pre-created heightmaps available: ",
+		HeightmapTemplates.precreated_available(), "/", HeightmapTemplates.PRECREATED.size())
+	# lettering diagnostics: the on-screen size of a 14 pt name must follow the
+	# device scale in WITH_MAP and stay constant in FIXED_SCREEN
+	print("[labels] mode=", view.label_scale_mode, " canvas_scale=", view.canvas_scale(),
+		" camera_zoom=", view.camera_zoom(), " interface_scale=", view.interface_scale(),
+		" oversampling=", view.label_oversampling(14.0))
+	var restore_zoom: Vector2 = camera.zoom
+	camera.zoom = Vector2(8.0, 8.0)
+	view.notification(CanvasItem.NOTIFICATION_DRAW)
+	print("[labels] at 800%: canvas_scale=", view.canvas_scale(),
+		" fixed_px=", view.label_screen_size(14.0, MapView.LabelScale.FIXED_SCREEN),
+		" map_px=", view.label_screen_size(14.0, MapView.LabelScale.WITH_MAP),
+		" oversampling=", view.label_oversampling(14.0))
+	camera.zoom = restore_zoom
+	view.queue_redraw()
 	# software-rendered previews of the default (political) and biome views
 	menu.apply_preset("political")
 	await _save_preview("/tmp/fmg_smoke_preview_political.png", true)
@@ -288,11 +331,12 @@ func _finish_generation_result(result: FmgSim, silent: bool, verb: String) -> vo
 	menu.show_loading(false)
 	view.rebuild_cache()
 	view.visible = true
-	camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
+	camera.set_map_rect(Rect2(0, 0, sim.map_width, sim.map_height))
 	menu.set_status(sim.get_stats_text())
 	menu.refresh_from_sim()
 	_generating = false
 	menu.set_busy(false)
+	_save_settings()
 	if not _preview_output.is_empty():
 		_save_preview(_preview_output)
 
@@ -440,9 +484,10 @@ func _on_load_requested() -> void:
 		if err == OK:
 			menu.refresh_from_sim()
 			view.rebuild_cache()
-			camera.map_rect = Rect2(0, 0, sim.map_width, sim.map_height)
+			camera.set_map_rect(Rect2(0, 0, sim.map_width, sim.map_height))
 			menu.set_status("Загружено: %s" % path)
 			camera.fit_to_map()
+			view.queue_redraw()
 		else:
 			menu.set_status("Ошибка загрузки: %s" % error_string(err))
 		dialog.queue_free()
@@ -509,6 +554,12 @@ func _export_png(path: String) -> void:
 	clone.style_road_width = view.style_road_width
 	clone.style_label_scale = view.style_label_scale
 	clone.distance_scale = view.distance_scale
+	clone.label_scale_mode = view.label_scale_mode
+	clone.label_declutter = view.label_declutter
+	clone.label_avoid_overlap = view.label_avoid_overlap
+	clone.label_min_px = view.label_min_px
+	clone.scale_bar_on_map = view.scale_bar_on_map
+	clone.vignette_on_map = view.vignette_on_map
 	clone.rebuild_cache()
 	clone.scale = Vector2(scale_factor, scale_factor)
 	sv.add_child(clone)
@@ -827,6 +878,119 @@ func _export_csv(path: String) -> void:
 
 
 # ---------------------------------------------------------------------------
+# Interface scale and persisted settings
+
+func _on_window_resized() -> void:
+	_apply_ui_scale()
+	if view != null:
+		view.queue_redraw()
+	if camera != null:
+		camera.update_zoom_limits()
+
+
+## Sets the interface scale. "Auto" leaves the scaling to the window (the
+## project is authored on a 1680×960 canvas, so everything already grows with
+## the window); the manual values add an extra factor on top of it.
+func _apply_ui_scale() -> void:
+	if menu != null:
+		menu.sync_scale_controls(ui_scale_mode, ui_scale_value)
+	var window := get_window()
+	if window == null:
+		return
+	var factor: float = 1.0
+	if ui_scale_mode == UiScaleMode.MANUAL:
+		factor = ui_scale_value
+	window.content_scale_factor = clampf(factor, 0.5, 4.0)
+
+
+func set_ui_scale(mode: int, value: float) -> void:
+	ui_scale_mode = mode
+	ui_scale_value = clampf(value, 0.5, 4.0)
+	_apply_ui_scale()
+	_save_settings()
+
+
+func _load_settings() -> void:
+	var data: Dictionary = FmgSettings.load_all()
+	if data.is_empty():
+		_apply_ui_scale()
+		return
+	ui_scale_mode = UiScaleMode.MANUAL if str(data.get("ui_scale_mode", "auto")) == "manual" else UiScaleMode.AUTO
+	ui_scale_value = float(data.get("ui_scale", 1.0))
+	if ui_theme != null:
+		var color_html: String = str(data.get("theme_color", ""))
+		if color_html.is_valid_html_color():
+			ui_theme.set_theme(Color.html(color_html), float(data.get("transparency", ui_theme.transparency)))
+		else:
+			ui_theme.set_theme(ui_theme.theme_color, float(data.get("transparency", ui_theme.transparency)))
+	if view != null:
+		view.label_scale_mode = clampi(int(data.get("label_scale_mode", MapView.LabelScale.WITH_MAP)), 0, 1)
+		view.label_declutter = bool(data.get("label_declutter", true))
+		view.label_avoid_overlap = bool(data.get("label_avoid_overlap", true))
+		view.label_min_px = float(data.get("label_min_px", 6.0))
+		view.style_label_scale = float(data.get("style_label_scale", 1.0))
+		view.scale_bar_on_map = bool(data.get("scale_bar_on_map", true))
+		view.vignette_on_map = bool(data.get("vignette_on_map", true))
+		view.distance_scale = float(data.get("distance_scale", 3.0))
+		sim.template_id = str(data.get("template", sim.template_id))
+		sim.geo_auto = bool(data.get("geo_auto", true))
+		sim.geo_map_size = float(data.get("geo_map_size", -1.0))
+		sim.geo_latitude = float(data.get("geo_latitude", 50.0))
+		sim.geo_longitude = float(data.get("geo_longitude", 50.0))
+		if not sim.geo_auto:
+			sim.recalculate_geography()
+		var layers: Dictionary = data.get("layers", {})
+		for key: String in layers.keys():
+			if key.begins_with("show_") and view.get(key) is bool:
+				view.set(key, bool(layers[key]))
+		view.queue_redraw()
+	if menu != null:
+		menu.refresh_from_sim()
+	_apply_ui_scale()
+	_settings_loaded = true
+
+
+func _collect_settings() -> Dictionary:
+	var layers: Dictionary = {}
+	if view != null:
+		for property: Dictionary in view.get_property_list():
+			var prop_name: String = str(property.get("name", ""))
+			if prop_name.begins_with("show_") and view.get(prop_name) is bool:
+				layers[prop_name] = bool(view.get(prop_name))
+	return {
+		"ui_scale_mode": "manual" if ui_scale_mode == UiScaleMode.MANUAL else "auto",
+		"ui_scale": ui_scale_value,
+		"theme_color": (ui_theme.theme_color if ui_theme != null else Color.html(FmgSettings.DEFAULT_THEME_COLOR)).to_html(false),
+		"transparency": (ui_theme.transparency if ui_theme != null else FmgSettings.DEFAULT_TRANSPARENCY),
+		"label_scale_mode": (view.label_scale_mode if view != null else 0),
+		"label_declutter": (view.label_declutter if view != null else true),
+		"label_avoid_overlap": (view.label_avoid_overlap if view != null else true),
+		"label_min_px": (view.label_min_px if view != null else 6.0),
+		"style_label_scale": (view.style_label_scale if view != null else 1.0),
+		"scale_bar_on_map": (view.scale_bar_on_map if view != null else true),
+		"vignette_on_map": (view.vignette_on_map if view != null else true),
+		"distance_scale": (view.distance_scale if view != null else 3.0),
+		"template": (sim.template_id if sim != null else "continents"),
+		"geo_auto": (sim.geo_auto if sim != null else true),
+		"geo_map_size": (sim.geo_map_size if sim != null else -1.0),
+		"geo_latitude": (sim.geo_latitude if sim != null else 50.0),
+		"geo_longitude": (sim.geo_longitude if sim != null else 50.0),
+		"layers": layers
+	}
+
+
+func _save_settings() -> void:
+	if not _settings_loaded:
+		return
+	FmgSettings.save_all(_collect_settings())
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_EXIT_TREE:
+		_save_settings()
+
+
+# ---------------------------------------------------------------------------
 # UI construction
 
 func _build_ui() -> void:
@@ -851,6 +1015,8 @@ func _build_ui() -> void:
 	menu.export_requested.connect(_on_export_requested)
 	menu.fit_requested.connect(func() -> void: camera.fit_to_map())
 	menu.climate_apply_requested.connect(_on_climate_apply_requested)
+	menu.ui_scale_requested.connect(set_ui_scale)
+	menu.settings_changed.connect(_save_settings)
 	menu.overview_requested.connect(func(kind: String) -> void: overviews.open(kind))
 	menu.brush_option.item_selected.connect(func(_i: int) -> void:
 		brush_active = menu.brush_option.get_selected_id() >= 0

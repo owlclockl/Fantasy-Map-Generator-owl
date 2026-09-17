@@ -420,6 +420,64 @@ func from_template(graph: FmgGraph, template_id: String, cells_desired: int, wid
 	return heights
 
 
+## Build the heights from one of the pre-created real-world heightmaps.
+## Exactly like the original: the image is stretched to the grid (one pixel per
+## cell) and every cell takes the lightness of its pixel — values below 0.2 pass
+## through, everything above is flattened by the 0.8 power curve, and the result
+## becomes a 0..100 height.
+func from_precreated(
+	graph: FmgGraph, template_id: String, cells_desired: int, width: float, height: float, rng: FmgRng
+) -> PackedByteArray:
+	_set_graph(graph, cells_desired, width, height, rng)
+	var image: Image = load_precreated_image(template_id)
+	if image == null:
+		push_warning("Не удалось прочитать высотную карту «%s», беру процедурный шаблон" % template_id)
+		return from_template(graph, "continents", cells_desired, width, height, rng)
+
+	if image.is_compressed():
+		image.decompress()
+	image.convert(Image.FORMAT_RGBA8)
+	image.resize(graph.cells_x, graph.cells_y, Image.INTERPOLATE_BILINEAR)
+
+	var out: PackedByteArray = heights
+	out.resize(graph.points.size())
+	for row: int in graph.cells_y:
+		var base: int = row * graph.cells_x
+		for col: int in graph.cells_x:
+			var index: int = base + col
+			if index >= out.size():
+				break
+			var lightness: float = image.get_pixel(col, row).r
+			var powered: float = lightness
+			if lightness >= 0.2:
+				powered = 0.2 + pow(lightness - 0.2, 0.8)
+			out[index] = clampi(int(floor(powered * 100.0)), 0, 100)
+	heights = out
+	return out
+
+
+## Read data/heightmaps/<id>.png without the texture importer: the folder carries
+## a .gdignore, so the bytes are the exact grayscale data of the original.
+static func load_precreated_image(template_id: String) -> Image:
+	var path: String = HeightmapTemplates.precreated_file(template_id)
+	if path.is_empty():
+		return null
+	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
+	if not bytes.is_empty():
+		var image := Image.new()
+		if image.load_png_from_buffer(bytes) == OK:
+			return image
+	# fallback for builds where the PNG was imported as a texture instead
+	# (the .gdignore in data/heightmaps keeps the importer away by default, so an
+	# exported build must add `data/heightmaps/*.png` to the non-resource export
+	# filter, otherwise the raw files are not packed at all)
+	if ResourceLoader.exists(path):
+		var texture: Texture2D = ResourceLoader.load(path) as Texture2D
+		if texture != null:
+			return texture.get_image()
+	return null
+
+
 ## Pick a random template id weighted by the template probabilities
 static func get_random_template_id(rng: FmgRng) -> String:
 	var weights := {}

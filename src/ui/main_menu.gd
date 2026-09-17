@@ -14,6 +14,8 @@ signal fit_requested
 signal climate_apply_requested
 signal brush_regen_requested
 signal overview_requested(kind: String) # burgs / states / rivers / markers
+signal ui_scale_requested(mode: int, value: float) # 0 = auto, 1 = manual
+signal settings_changed() # persist the current interface/map preferences
 
 const MENU_WIDTH := 376.0
 const TAB_IDS: Array = ["layers", "style", "options", "tools", "about"]
@@ -57,6 +59,7 @@ const LAYERS: Array = [
 	{"id": "markers", "label": "Маркеры", "key": KEY_K, "prop": "show_markers"},
 	{"id": "zones", "label": "Зоны", "key": KEY_Z, "prop": "show_zones"},
 	{"id": "labels", "label": "Подписи", "key": KEY_L, "prop": "show_labels"},
+	{"id": "legend", "label": "Легенда карты", "key": KEY_BACKSLASH, "prop": "show_legend"},
 	{"id": "vignette", "label": "Виньетка", "key": KEY_BRACKETLEFT, "prop": "show_vignette"},
 	{"id": "cells", "label": "Ячейки", "key": KEY_E, "prop": "show_cell_borders"},
 	{"id": "temperature", "label": "Температура", "key": KEY_T, "prop": "show_temperature"},
@@ -74,7 +77,7 @@ const LAYER_CATEGORIES: Array = [
 	},
 	{
 		"title": "🧭 Навигация и разметка",
-		"ids": ["compass", "grid", "coordinates", "scaleBar", "rulers", "routes", "journeys"]
+		"ids": ["compass", "grid", "coordinates", "scaleBar", "rulers", "legend", "routes", "journeys"]
 	},
 	{
 		"title": "⚖️ Экономика и события",
@@ -146,6 +149,12 @@ var provinces_ratio_spin: SpinBox = null
 var burgs_check: CheckButton = null
 var map_width_spin: SpinBox = null
 var map_height_spin: SpinBox = null
+# geography: where the map lies on the globe (FmgCoordinates)
+var geo_auto_check: CheckButton = null
+var geo_size_spin: SpinBox = null
+var geo_lat_spin: SpinBox = null
+var geo_lon_spin: SpinBox = null
+var geo_info_label: Label = null
 var distance_scale_spin: SpinBox = null
 var climate_equator_spin: SpinBox = null
 var climate_north_spin: SpinBox = null
@@ -157,6 +166,16 @@ var wind_spins: Array = []
 var brush_option: OptionButton = null
 var brush_size: HSlider = null
 var ruler_check: CheckButton = null
+
+# Interface / lettering preferences
+var ui_scale_option: OptionButton = null
+var label_overlap_check: CheckButton = null
+var label_mode_option: OptionButton = null
+var declutter_check: CheckButton = null
+var label_min_spin: SpinBox = null
+var label_scale_spin: SpinBox = null
+var scale_bar_option: OptionButton = null
+var vignette_option: OptionButton = null
 
 const DENSITIES := [[1, "1 000"], [2, "2 000"], [3, "5 000"], [4, "10 000"], [5, "20 000"]]
 const POINTS_BY_DENSITY := {1: 1000, 2: 2000, 3: 5000, 4: 10000, 5: 20000}
@@ -183,6 +202,11 @@ func setup(sim_ref: FmgSim, view_ref: MapView, theme_ref: FmgUiTheme) -> void:
 	_on_theme_changed()
 	apply_preset("political")
 
+	var viewport := get_viewport()
+	if viewport != null and not viewport.size_changed.is_connected(_fit_panel_to_viewport):
+		viewport.size_changed.connect(_fit_panel_to_viewport)
+	_fit_panel_to_viewport()
+
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -208,6 +232,22 @@ func _build_trigger() -> void:
 	new_map_button.pressed.connect(request_new_map)
 	_style_tag(new_map_button, "accent")
 	trigger_box.add_child(new_map_button)
+
+
+## Keeps the floating panel inside the visible canvas. The canvas shrinks when
+## the window is small or when the interface scale is raised, and the tab content
+## then has to scroll instead of running off the bottom of the screen.
+func _fit_panel_to_viewport() -> void:
+	if menu == null:
+		return
+	var viewport_size: Vector2 = get_viewport_rect().size
+	var max_scroll: float = clampf(viewport_size.y - 240.0, 140.0, 620.0)
+	for scroll_value: Variant in tab_contents.values():
+		var scroll: ScrollContainer = scroll_value
+		if scroll != null:
+			scroll.custom_minimum_size = Vector2(0.0, minf(440.0, max_scroll))
+	if menu.size.y > viewport_size.y:
+		menu.size.y = viewport_size.y
 
 
 ## The main Liquid Glass panel.
@@ -439,7 +479,8 @@ func _build_layers_tab(content: VBoxContainer) -> void:
 				if prop == "show_rulers" and pressed:
 					view.ruler_points = PackedVector2Array()
 				view.queue_redraw()
-				_refresh_layer_button(button, pressed))
+				_refresh_layer_button(button, pressed)
+				settings_changed.emit())
 			grid.add_child(button)
 			layer_buttons[layer_id] = button
 			_refresh_layer_button(button, button.button_pressed)
@@ -507,11 +548,87 @@ func _build_style_tab(content: VBoxContainer) -> void:
 	_spin_row(line_card, "Толщина дорог", 0.2, 6.0, 0.1, view.style_road_width, func(v: float) -> void:
 		view.style_road_width = v
 		view.queue_redraw())
-	_spin_row(line_card, "Масштаб подписей", 0.25, 4.0, 0.05, view.style_label_scale, func(v: float) -> void:
+	label_scale_spin = _spin_row(line_card, "Масштаб подписей", 0.25, 4.0, 0.05, view.style_label_scale, func(v: float) -> void:
 		view.style_label_scale = v
-		view.queue_redraw())
+		view.queue_redraw()
+		settings_changed.emit())
 
-	_tip(content, "Цвета и толщины применяются мгновенно без повторного расчёта геометрии.")
+	# --- lettering behaviour ---
+	var text_card := _make_card(content)
+	_label(text_card, "🔤 Подписи при приближении:", "section_header", true)
+
+	label_mode_option = OptionButton.new()
+	label_mode_option.add_item("Растут вместе с картой")
+	label_mode_option.set_item_metadata(0, MapView.LabelScale.WITH_MAP)
+	label_mode_option.add_item("Постоянный размер на экране")
+	label_mode_option.set_item_metadata(1, MapView.LabelScale.FIXED_SCREEN)
+	label_mode_option.select(view.label_scale_mode)
+	label_mode_option.tooltip_text = "В обоих режимах текст рисуется резко: глифы растеризуются под текущий зум, а не растягиваются"
+	_style_tag(label_mode_option, "select")
+	label_mode_option.item_selected.connect(func(index: int) -> void:
+		view.label_scale_mode = int(label_mode_option.get_item_metadata(index))
+		view.queue_redraw()
+		settings_changed.emit())
+	_option_row(text_card, "Поведение", label_mode_option)
+
+	declutter_check = CheckButton.new()
+	declutter_check.text = "Скрывать нечитаемо мелкие подписи"
+	declutter_check.button_pressed = view.label_declutter
+	_style_tag(declutter_check, "check")
+	declutter_check.toggled.connect(func(pressed: bool) -> void:
+		view.label_declutter = pressed
+		view.queue_redraw()
+		settings_changed.emit())
+	text_card.add_child(declutter_check)
+
+	label_min_spin = _spin_row(text_card, "Порог читаемости, px", 3.0, 20.0, 0.5, view.label_min_px, func(v: float) -> void:
+		view.label_min_px = v
+		view.queue_redraw()
+		settings_changed.emit())
+	label_min_spin.tooltip_text = "Подписи мельче этого размера на экране не рисуются (как уровни подписей в оригинале)"
+
+	label_overlap_check = CheckButton.new()
+	label_overlap_check.text = "Убирать налезающие названия"
+	label_overlap_check.button_pressed = view.label_avoid_overlap
+	label_overlap_check.tooltip_text = "Столицы и крупные города получают приоритет, мелкие названия скрываются, чтобы текст не сливался"
+	_style_tag(label_overlap_check, "check")
+	label_overlap_check.toggled.connect(func(pressed: bool) -> void:
+		view.label_avoid_overlap = pressed
+		view.queue_redraw()
+		settings_changed.emit())
+	text_card.add_child(label_overlap_check)
+
+	# --- map furniture ---
+	var furniture_card := _make_card(content)
+	_label(furniture_card, "🧭 Мебель карты:", "section_header", true)
+
+	scale_bar_option = OptionButton.new()
+	scale_bar_option.add_item("Напечатана на карте")
+	scale_bar_option.set_item_metadata(0, true)
+	scale_bar_option.add_item("Закреплена на экране")
+	scale_bar_option.set_item_metadata(1, false)
+	scale_bar_option.select(0 if view.scale_bar_on_map else 1)
+	_style_tag(scale_bar_option, "select")
+	scale_bar_option.item_selected.connect(func(index: int) -> void:
+		view.scale_bar_on_map = bool(scale_bar_option.get_item_metadata(index))
+		view.queue_redraw()
+		settings_changed.emit())
+	_option_row(furniture_card, "Линейка масштаба", scale_bar_option)
+
+	vignette_option = OptionButton.new()
+	vignette_option.add_item("Рамка на карте")
+	vignette_option.set_item_metadata(0, true)
+	vignette_option.add_item("Виньетка на экране")
+	vignette_option.set_item_metadata(1, false)
+	vignette_option.select(0 if view.vignette_on_map else 1)
+	_style_tag(vignette_option, "select")
+	vignette_option.item_selected.connect(func(index: int) -> void:
+		view.vignette_on_map = bool(vignette_option.get_item_metadata(index))
+		view.queue_redraw()
+		settings_changed.emit())
+	_option_row(furniture_card, "Виньетка", vignette_option)
+
+	_tip(content, "Цвета, толщины, подписи и мебель применяются мгновенно без повторного расчёта геометрии и запоминаются между запусками.")
 
 
 # ---------------------------------------------------------------------------
@@ -558,18 +675,61 @@ func _build_options_tab(content: VBoxContainer) -> void:
 	_option_row(geom_card, "Детализация", density_option)
 
 	template_option = OptionButton.new()
-	var templates: Array = HeightmapTemplates.TEMPLATES.keys()
 	template_option.add_item("Случайный", 0)
 	template_option.set_item_metadata(0, "random")
 	var t_index: int = 1
-	for tid: String in templates:
+	for tid: String in HeightmapTemplates.TEMPLATES:
 		template_option.add_item(HeightmapTemplates.template_name(tid), t_index)
 		template_option.set_item_metadata(t_index, tid)
 		t_index += 1
+	# the pre-created real-world heightmaps of the original
+	template_option.add_separator("Реальные миры")
+	for tid: String in HeightmapTemplates.PRECREATED:
+		template_option.add_item("🌍 " + HeightmapTemplates.template_name(tid), t_index)
+		template_option.set_item_metadata(t_index, tid)
+		t_index += 1
 	template_option.select(1 + 3)
-	template_option.tooltip_text = "Шаблон высотной карты"
+	template_option.tooltip_text = "Шаблон высотной карты: процедурный или реальный мир (Британия, Исландия, Европа…)"
 	_style_tag(template_option, "select")
+	template_option.item_selected.connect(func(_index: int) -> void: _update_geography_hint())
 	_option_row(geom_card, "Шаблон", template_option)
+
+	# Geography Card: the map's place on the globe. It is what makes a map of
+	# Britain temperate and a map of Iceland sub-polar, exactly like in the
+	# original, where the template provides the size and the position.
+	var geo_card := _make_card(content)
+	_label(geo_card, "🌍 Положение на глобусе:", "section_header", true)
+
+	geo_auto_check = CheckButton.new()
+	geo_auto_check.text = "По шаблону (авто)"
+	geo_auto_check.button_pressed = sim.geo_auto
+	geo_auto_check.tooltip_text = "Размер и широту выбирает шаблон (у реальных миров они фиксированы)"
+	_style_tag(geo_auto_check, "check")
+	geo_auto_check.toggled.connect(func(pressed: bool) -> void:
+		sim.geo_auto = pressed
+		if not pressed and sim.geo_map_size < 0.0:
+			# unlocking the sliders starts from the values the template produced
+			sim.geo_map_size = maxf(sim.lat_t / 1.8, 1.0)
+			sim.geo_latitude = clampf((90.0 - sim.lat_n) / maxf(180.0 - sim.lat_t, 1.0) * 100.0, 0.0, 100.0)
+			sim.geo_longitude = clampf((180.0 - sim.lon_e) / maxf(360.0 - sim.lon_t, 1.0) * 100.0, 0.0, 100.0)
+		_sync_geography_controls()
+		settings_changed.emit())
+	geo_card.add_child(geo_auto_check)
+
+	geo_size_spin = _make_spin(1.0, 100.0, 0.5, maxf(sim.geo_map_size, 1.0))
+	_spin_control_row(geo_card, "Размер мира %", geo_size_spin)
+	geo_lat_spin = _make_spin(0.0, 100.0, 0.5, sim.geo_latitude)
+	_spin_control_row(geo_card, "Сдвиг широты %", geo_lat_spin)
+	geo_lon_spin = _make_spin(0.0, 100.0, 0.5, sim.geo_longitude)
+	_spin_control_row(geo_card, "Сдвиг долготы %", geo_lon_spin)
+	for spin: SpinBox in [geo_size_spin, geo_lat_spin, geo_lon_spin]:
+		spin.editable = not sim.geo_auto
+		spin.value_changed.connect(func(_v: float) -> void:
+			_apply_geography_from_controls()
+			settings_changed.emit())
+
+	geo_info_label = _label(geo_card, sim.geography_text(), "tip")
+	_tip(geo_card, "Шаблоны реальных миров несут своё положение: Британия — 7 % мира на 51° с. ш., Исландия — 2 % на 55°, Африка — 45 % на экваторе. Широтный пояс задаёт температуру, осадки, лёд, биомы и градусную сетку; пересчёт — кнопкой «Применить климат».")
 
 	var civ_card := _make_card(content)
 	_label(civ_card, "🏛️ Население и державы:", "section_header", true)
@@ -647,15 +807,38 @@ func _build_options_tab(content: VBoxContainer) -> void:
 	hue_slider.value = 228.0
 	hue_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_style_tag(hue_slider, "slider")
-	hue_slider.value_changed.connect(func(v: float) -> void: ui_theme.set_hue(v))
+	hue_slider.value_changed.connect(func(v: float) -> void:
+		ui_theme.set_hue(v)
+		settings_changed.emit())
 	theme_row.add_child(hue_slider)
 	var color_picker := ColorPickerButton.new()
 	color_picker.custom_minimum_size = Vector2(38, 24)
 	color_picker.color = ui_theme.theme_color
-	color_picker.color_changed.connect(func(color: Color) -> void: ui_theme.set_theme(color, ui_theme.transparency))
+	color_picker.color_changed.connect(func(color: Color) -> void:
+		ui_theme.set_theme(color, ui_theme.transparency)
+		settings_changed.emit())
 	theme_row.add_child(color_picker)
 	_spin_row(theme_card, "Прозрачность %", 0.0, 90.0, 1.0, ui_theme.transparency, func(v: float) -> void:
-		ui_theme.set_theme(ui_theme.theme_color, v))
+		ui_theme.set_theme(ui_theme.theme_color, v)
+		settings_changed.emit())
+
+	# Interface scale (HiDPI / 4K screens)
+	var ui_card := _make_card(content)
+	_label(ui_card, "🖥️ Интерфейс:", "section_header", true)
+	ui_scale_option = OptionButton.new()
+	ui_scale_option.add_item("Авто (по размеру окна)")
+	ui_scale_option.set_item_metadata(0, {"mode": 0, "scale": 1.0})
+	var scale_choices: Array = [1.0, 1.1, 1.25, 1.5, 1.75, 2.0]
+	for factor: float in scale_choices:
+		var index: int = ui_scale_option.item_count
+		ui_scale_option.add_item("%d %%" % int(round(factor * 100.0)))
+		ui_scale_option.set_item_metadata(index, {"mode": 1, "scale": factor})
+	_style_tag(ui_scale_option, "select")
+	ui_scale_option.item_selected.connect(func(index: int) -> void:
+		var meta: Dictionary = ui_scale_option.get_item_metadata(index)
+		ui_scale_requested.emit(int(meta.get("mode", 0)), float(meta.get("scale", 1.0))))
+	_option_row(ui_card, "Масштаб UI", ui_scale_option)
+	_tip(ui_card, "Интерфейс масштабируется под размер окна; здесь можно добавить множитель для плотных экранов. Текст интерфейса и карты растеризуется под итоговый масштаб, поэтому остаётся резким.")
 
 	# Big Call-to-Action button
 	var generate := Button.new()
@@ -780,7 +963,7 @@ func _build_about_tab(content: VBoxContainer) -> void:
 	var hotkey_card := _make_card(content)
 	_label(hotkey_card, "⌨️ Горячие клавиши:", "section_header", true)
 	var hotkeys := Label.new()
-	hotkeys.text = "Tab — показать / скрыть меню\nF2 — новая карта со случайным сидом\n0 — вписать карту в видимую область\nПробел — поиск по слоям и командам (Spotlight)\nEsc — закрыть активный диалог\nКолесо мыши — зум; ЛКМ / ПКМ — панорама\nB, S, C, R, P, T, N и другие — быстрое переключение слоёв"
+	hotkeys.text = "Tab — показать / скрыть меню\nF2 — новая карта со случайным сидом\n0 — вписать карту в видимую область\nПробел — поиск по слоям и командам (Spotlight)\nEsc — закрыть активный диалог\nКолесо мыши — плавный зум; ЛКМ / ПКМ — панорама\nB, S, C, R, P, T, N и другие — быстрое переключение слоёв\n\\ — легенда карты"
 	hotkeys.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hotkeys.add_theme_font_override("font", FmgUiTheme.font_ui())
 	_style_tag(hotkeys, "tip")
@@ -963,7 +1146,7 @@ func _build_status_bar() -> void:
 	status_label.text = "● Готов к генерации"
 	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_label.add_theme_font_override("font", FmgUiTheme.font_ui())
-	status_label.add_theme_font_size_override("font_size", 12)
+	status_label.add_theme_font_size_override("font_size", 13)
 	status_label.add_theme_color_override("font_color", Color("#e8ecf8"))
 	status_label.clip_text = true
 	status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -972,7 +1155,7 @@ func _build_status_bar() -> void:
 	zoom_label = Label.new()
 	zoom_label.text = "100%"
 	zoom_label.add_theme_font_override("font", FmgUiTheme.mono())
-	zoom_label.add_theme_font_size_override("font_size", 12)
+	zoom_label.add_theme_font_size_override("font_size", 13)
 	zoom_label.add_theme_color_override("font_color", Color("#a0acc4"))
 	zoom_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(zoom_label)
@@ -1167,6 +1350,7 @@ func apply_preset(preset_id: String) -> void:
 			if str(preset_option.get_item_metadata(i)) == preset_id:
 				preset_option.select(i)
 				break
+	settings_changed.emit()
 
 
 func _refresh_layer_button(button: Button, active: bool) -> void:
@@ -1185,6 +1369,7 @@ func handle_layer_key(keycode: int) -> bool:
 			view.queue_redraw()
 			if layer_buttons.has(str(layer["id"])):
 				_refresh_layer_button(layer_buttons[str(layer["id"])], new_val)
+			settings_changed.emit()
 			return true
 	return false
 
@@ -1212,18 +1397,22 @@ func _set_node_busy(node: Node, busy: bool, skip: Array = []) -> void:
 
 
 func set_status(text: String) -> void:
-	if status_label != null:
+	if status_label != null and status_label.text != "● " + text:
 		status_label.text = "● " + text
 
 
 func set_zoom(zoom: float) -> void:
-	if zoom_label != null:
-		zoom_label.text = "🔍 %d%%" % int(round(zoom * 100.0))
+	set_zoom_info(int(round(zoom * 100.0)), "")
 
 
+## Called every frame: only touch the label when the text actually changes, so the
+## status bar does not re-layout continuously while the map moves.
 func set_zoom_info(zoom_percent: int, pointer: String) -> void:
-	if zoom_label != null:
-		zoom_label.text = "🔍 %d%% · %s" % [zoom_percent, pointer]
+	if zoom_label == null:
+		return
+	var text: String = "🔍 %d%%" % zoom_percent if pointer.is_empty() else "🔍 %d%% · %s" % [zoom_percent, pointer]
+	if zoom_label.text != text:
+		zoom_label.text = text
 
 
 func show_progress(vis: bool) -> void:
@@ -1250,6 +1439,60 @@ func set_loading_stage(stage_text: String, progress_value: float) -> void:
 		loading_stage_label.text = stage_text
 	if loading_progress != null:
 		loading_progress.value = clampf(progress_value, 0.0, 1.0)
+
+
+## Push the simulation's geography into the controls of the geography card
+func _sync_geography_controls() -> void:
+	if geo_auto_check != null:
+		geo_auto_check.set_pressed_no_signal(sim.geo_auto)
+	var editable: bool = not sim.geo_auto
+	if geo_size_spin != null:
+		geo_size_spin.editable = editable
+		geo_size_spin.set_value_no_signal(clampf(maxf(sim.geo_map_size, 1.0), 1.0, 100.0))
+	if geo_lat_spin != null:
+		geo_lat_spin.editable = editable
+		geo_lat_spin.set_value_no_signal(clampf(sim.geo_latitude, 0.0, 100.0))
+	if geo_lon_spin != null:
+		geo_lon_spin.editable = editable
+		geo_lon_spin.set_value_no_signal(clampf(sim.geo_longitude, 0.0, 100.0))
+	_update_geography_hint()
+
+
+## The sliders own the values as soon as "авто" is off. The lat/lon box is
+## re-derived at once, so the interface shows the new position immediately and
+## the next "Применить климат" uses it.
+func _apply_geography_from_controls() -> void:
+	if sim.geo_auto:
+		return
+	if geo_size_spin != null:
+		sim.geo_map_size = clampf(float(geo_size_spin.value), 1.0, 100.0)
+	if geo_lat_spin != null:
+		sim.geo_latitude = clampf(float(geo_lat_spin.value), 0.0, 100.0)
+	if geo_lon_spin != null:
+		sim.geo_longitude = clampf(float(geo_lon_spin.value), 0.0, 100.0)
+	sim.recalculate_geography()
+	_update_geography_hint()
+
+
+## Hint under the controls: the template's own position before the first
+## generation, the resulting box afterwards
+func _update_geography_hint() -> void:
+	if geo_info_label == null:
+		return
+	var template: String = sim.template_id
+	if template_option != null and template_option.selected >= 0:
+		var meta: Variant = template_option.get_item_metadata(template_option.selected)
+		if meta != null:
+			template = str(meta)
+	if sim.geo_auto:
+		if sim.grid == null:
+			geo_info_label.text = "Шаблон «%s»: %s" % [
+				HeightmapTemplates.template_name(template), FmgCoordinates.template_hint(template)
+			]
+		else:
+			geo_info_label.text = "Авто: %d %% мира · %s" % [int(round(maxf(sim.geo_map_size, 0.0))), sim.geography_text()]
+	else:
+		geo_info_label.text = "Вручную: %d %% мира · %s" % [int(round(sim.geo_map_size)), sim.geography_text()]
 
 
 func apply_generation_options() -> void:
@@ -1283,6 +1526,13 @@ func apply_generation_options() -> void:
 		sim.provinces_ratio = float(provinces_ratio_spin.value)
 	if burgs_check != null:
 		sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
+	# geography: "auto" lets the template decide, otherwise the sliders win
+	if geo_auto_check != null:
+		sim.geo_auto = geo_auto_check.button_pressed
+	if sim.geo_auto:
+		sim.geo_map_size = -1.0
+	else:
+		_apply_geography_from_controls()
 	sim.poles_cache = {}
 	if distance_scale_spin != null and view != null:
 		view.distance_scale = float(distance_scale_spin.value)
@@ -1323,6 +1573,7 @@ func refresh_from_sim() -> void:
 		burgs_check.set_pressed_no_signal(sim.burgs_limit < 0)
 	if distance_scale_spin != null:
 		distance_scale_spin.set_value_no_signal(view.distance_scale)
+	_sync_geography_controls()
 	if climate_equator_spin != null:
 		climate_equator_spin.set_value_no_signal(sim.climate_equator)
 		climate_north_spin.set_value_no_signal(sim.climate_north_pole)
@@ -1330,6 +1581,20 @@ func refresh_from_sim() -> void:
 		climate_precip_spin.set_value_no_signal(sim.climate_precipitation)
 		for i: int in mini(wind_spins.size(), sim.climate_winds.size()):
 			(wind_spins[i] as SpinBox).set_value_no_signal(float(sim.climate_winds[i]))
+	if label_mode_option != null:
+		label_mode_option.select(view.label_scale_mode)
+	if declutter_check != null:
+		declutter_check.set_pressed_no_signal(view.label_declutter)
+	if label_overlap_check != null:
+		label_overlap_check.set_pressed_no_signal(view.label_avoid_overlap)
+	if label_min_spin != null:
+		label_min_spin.set_value_no_signal(view.label_min_px)
+	if label_scale_spin != null:
+		label_scale_spin.set_value_no_signal(view.style_label_scale)
+	if scale_bar_option != null:
+		scale_bar_option.select(0 if view.scale_bar_on_map else 1)
+	if vignette_option != null:
+		vignette_option.select(0 if view.vignette_on_map else 1)
 	for layer: Dictionary in LAYERS:
 		var id: String = str(layer["id"])
 		if layer_buttons.has(id):
@@ -1341,6 +1606,19 @@ func refresh_from_sim() -> void:
 
 func sync_from_sim() -> void:
 	refresh_from_sim()
+
+
+## Mirrors the interface scale that main.gd actually applied.
+func sync_scale_controls(mode: int, value: float) -> void:
+	if ui_scale_option == null:
+		return
+	for index: int in ui_scale_option.item_count:
+		var meta: Dictionary = ui_scale_option.get_item_metadata(index)
+		if int(meta.get("mode", 0)) != mode:
+			continue
+		if mode == 0 or is_equal_approx(float(meta.get("scale", 1.0)), value):
+			ui_scale_option.select(index)
+			return
 
 
 func _on_theme_changed() -> void:
@@ -1368,7 +1646,7 @@ func _label(parent: Control, text: String, kind: String = "label", bold: bool = 
 	label.text = text
 	_style_tag(label, kind)
 	if bold:
-		label.add_theme_font_size_override("font_size", 12)
+		label.add_theme_font_size_override("font_size", 13)
 	parent.add_child(label)
 	return label
 
@@ -1394,7 +1672,7 @@ func _make_spin(min_value: float, max_value: float, step: float, value: float, w
 	return spin
 
 
-func _spin_row(parent: Control, label_text: String, min_value: float, max_value: float, step: float, value: float, on_change: Callable) -> void:
+func _spin_row(parent: Control, label_text: String, min_value: float, max_value: float, step: float, value: float, on_change: Callable) -> SpinBox:
 	var row := HBoxContainer.new()
 	parent.add_child(row)
 	_label(row, label_text, "label")
@@ -1402,6 +1680,7 @@ func _spin_row(parent: Control, label_text: String, min_value: float, max_value:
 	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(spin)
 	spin.value_changed.connect(func(v: float) -> void: on_change.call(v))
+	return spin
 
 
 func _spin_control_row(parent: Control, label_text: String, spin: SpinBox) -> void:
