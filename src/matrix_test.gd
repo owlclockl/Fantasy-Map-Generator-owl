@@ -16,6 +16,7 @@ func _ready() -> void:
 	view.sim = sim
 	add_child(view)
 	templates = HeightmapTemplates.TEMPLATES.keys()
+	templates.append_array(HeightmapTemplates.PRECREATED.keys()) # the 23 real worlds
 	templates.push_front("random")
 	sim.cells_desired = 1000
 	sim.states_limit = 12
@@ -52,6 +53,7 @@ func _next() -> void:
 		for s in sim.pack.states:
 			if s != null and int(s["i"]) > 0:
 				states += 1
-		print("[matrix] OK ", template, " seed=", seed, " rivers=", rivers, " states=", states)
+		print("[matrix] OK ", template, " seed=", seed, " rivers=", rivers, " states=", states,
+			" geo=", sim.geo_map_size, "% ", sim.geography_text())
 	index += 1
 	_next.call_deferred()

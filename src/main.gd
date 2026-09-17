@@ -98,6 +98,14 @@ func _run_headless_smoke() -> void:
 	# a manual NOTIFICATION_DRAW runs the whole _draw path even headlessly
 	view.notification(CanvasItem.NOTIFICATION_DRAW)
 	print("[smoke] draw path exercised")
+	# geography: the map's place on the globe is what makes the climate match
+	# the original (Britain is 7 % of the world at 51° N, Iceland 2 % at 55°)
+	print("[geo] template=", sim.template_id, " resolved=", sim.resolved_template_id,
+		" auto=", sim.geo_auto, " size=", sim.geo_map_size,
+		" lat_shift=", sim.geo_latitude, " lon_shift=", sim.geo_longitude)
+	print("[geo] box=", sim.geography_text(), " (latT=", sim.lat_t, " lonT=", sim.lon_t, ")")
+	print("[geo] pre-created heightmaps available: ",
+		HeightmapTemplates.precreated_available(), "/", HeightmapTemplates.PRECREATED.size())
 	# lettering diagnostics: the on-screen size of a 14 pt name must follow the
 	# device scale in WITH_MAP and stay constant in FIXED_SCREEN
 	print("[labels] mode=", view.label_scale_mode, " canvas_scale=", view.canvas_scale(),
@@ -924,6 +932,13 @@ func _load_settings() -> void:
 		view.scale_bar_on_map = bool(data.get("scale_bar_on_map", true))
 		view.vignette_on_map = bool(data.get("vignette_on_map", true))
 		view.distance_scale = float(data.get("distance_scale", 3.0))
+		sim.template_id = str(data.get("template", sim.template_id))
+		sim.geo_auto = bool(data.get("geo_auto", true))
+		sim.geo_map_size = float(data.get("geo_map_size", -1.0))
+		sim.geo_latitude = float(data.get("geo_latitude", 50.0))
+		sim.geo_longitude = float(data.get("geo_longitude", 50.0))
+		if not sim.geo_auto:
+			sim.recalculate_geography()
 		var layers: Dictionary = data.get("layers", {})
 		for key: String in layers.keys():
 			if key.begins_with("show_") and view.get(key) is bool:
@@ -955,6 +970,11 @@ func _collect_settings() -> Dictionary:
 		"scale_bar_on_map": (view.scale_bar_on_map if view != null else true),
 		"vignette_on_map": (view.vignette_on_map if view != null else true),
 		"distance_scale": (view.distance_scale if view != null else 3.0),
+		"template": (sim.template_id if sim != null else "continents"),
+		"geo_auto": (sim.geo_auto if sim != null else true),
+		"geo_map_size": (sim.geo_map_size if sim != null else -1.0),
+		"geo_latitude": (sim.geo_latitude if sim != null else 50.0),
+		"geo_longitude": (sim.geo_longitude if sim != null else 50.0),
 		"layers": layers
 	}
 

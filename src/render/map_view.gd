@@ -1933,21 +1933,33 @@ func _draw_grid() -> void:
 		draw_multiline(segments, col, 0.6, true)
 
 
-## Equirectangular graticule from the map's latitude span (lat_n/lat_s/lat_t).
+## Equirectangular graticule from the map's lat/lon box. The box is set by
+## FmgSim/FmgCoordinates (world size and position, see the "География" stage), so
+## a map of Britain gets its 51° N grid instead of the whole globe's.
 func _draw_coordinates() -> void:
 	if sim.lat_t <= 0.0:
 		return
 	var lat_n: float = sim.lat_n
 	var lat_s: float = sim.lat_s
 	var lat_t: float = sim.lat_t
-	var lon_t: float = minf(sim.map_width / sim.map_height * lat_t, 360.0)
-	var lon_w: float = -lon_t / 2.0
+	var lon_t: float = sim.lon_t
+	if lon_t <= 0.0:
+		# legacy maps without a saved geography: derive the span from the aspect
+		lon_t = minf(sim.map_width / sim.map_height * lat_t, 360.0)
+	var lon_w: float = sim.lon_w if sim.lon_t > 0.0 else -lon_t / 2.0
 	var steps: Array = [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0]
 	var goal: float = lat_t / 12.0
+	var lon_goal: float = lon_t / 12.0
 	var step: float = 30.0
 	for candidate: float in steps:
 		if absf(candidate - goal) < absf(step - goal):
 			step = candidate
+	# a narrow map needs a finer grid, otherwise it would show one lonely line
+	var step_lon: float = 30.0
+	for candidate: float in steps:
+		if absf(candidate - lon_goal) < absf(step_lon - lon_goal):
+			step_lon = candidate
+	step_lon = minf(step_lon, step)
 	var col := Color(0.12, 0.2, 0.33, 0.55)
 	var segments := PackedVector2Array()
 	var labels: Array = []
@@ -1956,15 +1968,15 @@ func _draw_coordinates() -> void:
 		var y: float = (lat_n - lat) / lat_t * sim.map_height
 		segments.append(Vector2(0, y))
 		segments.append(Vector2(sim.map_width, y))
-		labels.append({"text": "%d°" % int(lat), "pos": Vector2(0.0, y)})
+		labels.append({"text": FmgCoordinates.format_latitude(lat), "pos": Vector2(0.0, y)})
 		lat += step
-	var lon: float = ceilf(lon_w / step) * step
+	var lon: float = ceilf(lon_w / step_lon) * step_lon
 	while lon <= lon_w + lon_t + 0.001:
 		var x: float = (lon - lon_w) / lon_t * sim.map_width
 		segments.append(Vector2(x, 0))
 		segments.append(Vector2(x, sim.map_height))
-		labels.append({"text": "%d°" % int(round(lon)), "pos": Vector2(x, 0.0)})
-		lon += step
+		labels.append({"text": FmgCoordinates.format_longitude(lon), "pos": Vector2(x, 0.0)})
+		lon += step_lon
 	if not segments.is_empty():
 		draw_multiline(segments, col, 0.5, true)
 	var font_to_use: Font = _font_sans if _font_sans != null else _font

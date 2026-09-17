@@ -149,6 +149,12 @@ var provinces_ratio_spin: SpinBox = null
 var burgs_check: CheckButton = null
 var map_width_spin: SpinBox = null
 var map_height_spin: SpinBox = null
+# geography: where the map lies on the globe (FmgCoordinates)
+var geo_auto_check: CheckButton = null
+var geo_size_spin: SpinBox = null
+var geo_lat_spin: SpinBox = null
+var geo_lon_spin: SpinBox = null
+var geo_info_label: Label = null
 var distance_scale_spin: SpinBox = null
 var climate_equator_spin: SpinBox = null
 var climate_north_spin: SpinBox = null
@@ -669,18 +675,61 @@ func _build_options_tab(content: VBoxContainer) -> void:
 	_option_row(geom_card, "Детализация", density_option)
 
 	template_option = OptionButton.new()
-	var templates: Array = HeightmapTemplates.TEMPLATES.keys()
 	template_option.add_item("Случайный", 0)
 	template_option.set_item_metadata(0, "random")
 	var t_index: int = 1
-	for tid: String in templates:
+	for tid: String in HeightmapTemplates.TEMPLATES:
 		template_option.add_item(HeightmapTemplates.template_name(tid), t_index)
 		template_option.set_item_metadata(t_index, tid)
 		t_index += 1
+	# the pre-created real-world heightmaps of the original
+	template_option.add_separator("Реальные миры")
+	for tid: String in HeightmapTemplates.PRECREATED:
+		template_option.add_item("🌍 " + HeightmapTemplates.template_name(tid), t_index)
+		template_option.set_item_metadata(t_index, tid)
+		t_index += 1
 	template_option.select(1 + 3)
-	template_option.tooltip_text = "Шаблон высотной карты"
+	template_option.tooltip_text = "Шаблон высотной карты: процедурный или реальный мир (Британия, Исландия, Европа…)"
 	_style_tag(template_option, "select")
+	template_option.item_selected.connect(func(_index: int) -> void: _update_geography_hint())
 	_option_row(geom_card, "Шаблон", template_option)
+
+	# Geography Card: the map's place on the globe. It is what makes a map of
+	# Britain temperate and a map of Iceland sub-polar, exactly like in the
+	# original, where the template provides the size and the position.
+	var geo_card := _make_card(content)
+	_label(geo_card, "🌍 Положение на глобусе:", "section_header", true)
+
+	geo_auto_check = CheckButton.new()
+	geo_auto_check.text = "По шаблону (авто)"
+	geo_auto_check.button_pressed = sim.geo_auto
+	geo_auto_check.tooltip_text = "Размер и широту выбирает шаблон (у реальных миров они фиксированы)"
+	_style_tag(geo_auto_check, "check")
+	geo_auto_check.toggled.connect(func(pressed: bool) -> void:
+		sim.geo_auto = pressed
+		if not pressed and sim.geo_map_size < 0.0:
+			# unlocking the sliders starts from the values the template produced
+			sim.geo_map_size = maxf(sim.lat_t / 1.8, 1.0)
+			sim.geo_latitude = clampf((90.0 - sim.lat_n) / maxf(180.0 - sim.lat_t, 1.0) * 100.0, 0.0, 100.0)
+			sim.geo_longitude = clampf((180.0 - sim.lon_e) / maxf(360.0 - sim.lon_t, 1.0) * 100.0, 0.0, 100.0)
+		_sync_geography_controls()
+		settings_changed.emit())
+	geo_card.add_child(geo_auto_check)
+
+	geo_size_spin = _make_spin(1.0, 100.0, 0.5, maxf(sim.geo_map_size, 1.0))
+	_spin_control_row(geo_card, "Размер мира %", geo_size_spin)
+	geo_lat_spin = _make_spin(0.0, 100.0, 0.5, sim.geo_latitude)
+	_spin_control_row(geo_card, "Сдвиг широты %", geo_lat_spin)
+	geo_lon_spin = _make_spin(0.0, 100.0, 0.5, sim.geo_longitude)
+	_spin_control_row(geo_card, "Сдвиг долготы %", geo_lon_spin)
+	for spin: SpinBox in [geo_size_spin, geo_lat_spin, geo_lon_spin]:
+		spin.editable = not sim.geo_auto
+		spin.value_changed.connect(func(_v: float) -> void:
+			_apply_geography_from_controls()
+			settings_changed.emit())
+
+	geo_info_label = _label(geo_card, sim.geography_text(), "tip")
+	_tip(geo_card, "Шаблоны реальных миров несут своё положение: Британия — 7 % мира на 51° с. ш., Исландия — 2 % на 55°, Африка — 45 % на экваторе. Широтный пояс задаёт температуру, осадки, лёд, биомы и градусную сетку; пересчёт — кнопкой «Применить климат».")
 
 	var civ_card := _make_card(content)
 	_label(civ_card, "🏛️ Население и державы:", "section_header", true)
@@ -1392,6 +1441,60 @@ func set_loading_stage(stage_text: String, progress_value: float) -> void:
 		loading_progress.value = clampf(progress_value, 0.0, 1.0)
 
 
+## Push the simulation's geography into the controls of the geography card
+func _sync_geography_controls() -> void:
+	if geo_auto_check != null:
+		geo_auto_check.set_pressed_no_signal(sim.geo_auto)
+	var editable: bool = not sim.geo_auto
+	if geo_size_spin != null:
+		geo_size_spin.editable = editable
+		geo_size_spin.set_value_no_signal(clampf(maxf(sim.geo_map_size, 1.0), 1.0, 100.0))
+	if geo_lat_spin != null:
+		geo_lat_spin.editable = editable
+		geo_lat_spin.set_value_no_signal(clampf(sim.geo_latitude, 0.0, 100.0))
+	if geo_lon_spin != null:
+		geo_lon_spin.editable = editable
+		geo_lon_spin.set_value_no_signal(clampf(sim.geo_longitude, 0.0, 100.0))
+	_update_geography_hint()
+
+
+## The sliders own the values as soon as "авто" is off. The lat/lon box is
+## re-derived at once, so the interface shows the new position immediately and
+## the next "Применить климат" uses it.
+func _apply_geography_from_controls() -> void:
+	if sim.geo_auto:
+		return
+	if geo_size_spin != null:
+		sim.geo_map_size = clampf(float(geo_size_spin.value), 1.0, 100.0)
+	if geo_lat_spin != null:
+		sim.geo_latitude = clampf(float(geo_lat_spin.value), 0.0, 100.0)
+	if geo_lon_spin != null:
+		sim.geo_longitude = clampf(float(geo_lon_spin.value), 0.0, 100.0)
+	sim.recalculate_geography()
+	_update_geography_hint()
+
+
+## Hint under the controls: the template's own position before the first
+## generation, the resulting box afterwards
+func _update_geography_hint() -> void:
+	if geo_info_label == null:
+		return
+	var template: String = sim.template_id
+	if template_option != null and template_option.selected >= 0:
+		var meta: Variant = template_option.get_item_metadata(template_option.selected)
+		if meta != null:
+			template = str(meta)
+	if sim.geo_auto:
+		if sim.grid == null:
+			geo_info_label.text = "Шаблон «%s»: %s" % [
+				HeightmapTemplates.template_name(template), FmgCoordinates.template_hint(template)
+			]
+		else:
+			geo_info_label.text = "Авто: %d %% мира · %s" % [int(round(maxf(sim.geo_map_size, 0.0))), sim.geography_text()]
+	else:
+		geo_info_label.text = "Вручную: %d %% мира · %s" % [int(round(sim.geo_map_size)), sim.geography_text()]
+
+
 func apply_generation_options() -> void:
 	if seed_edit != null:
 		sim.seed_value = seed_edit.text.strip_edges()
@@ -1423,6 +1526,13 @@ func apply_generation_options() -> void:
 		sim.provinces_ratio = float(provinces_ratio_spin.value)
 	if burgs_check != null:
 		sim.burgs_limit = -1 if burgs_check.button_pressed else 1000
+	# geography: "auto" lets the template decide, otherwise the sliders win
+	if geo_auto_check != null:
+		sim.geo_auto = geo_auto_check.button_pressed
+	if sim.geo_auto:
+		sim.geo_map_size = -1.0
+	else:
+		_apply_geography_from_controls()
 	sim.poles_cache = {}
 	if distance_scale_spin != null and view != null:
 		view.distance_scale = float(distance_scale_spin.value)
@@ -1463,6 +1573,7 @@ func refresh_from_sim() -> void:
 		burgs_check.set_pressed_no_signal(sim.burgs_limit < 0)
 	if distance_scale_spin != null:
 		distance_scale_spin.set_value_no_signal(view.distance_scale)
+	_sync_geography_controls()
 	if climate_equator_spin != null:
 		climate_equator_spin.set_value_no_signal(sim.climate_equator)
 		climate_north_spin.set_value_no_signal(sim.climate_north_pole)

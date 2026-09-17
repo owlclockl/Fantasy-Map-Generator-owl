@@ -21,6 +21,12 @@ const DEFAULT_STYLE_LABEL_SCALE := 1.0
 const DEFAULT_SCALE_BAR_ON_MAP := true
 const DEFAULT_VIGNETTE_ON_MAP := true
 const DEFAULT_DISTANCE_SCALE := 3.0
+# geography of the world (the original keeps these as "pins" and reuses them)
+const DEFAULT_GEO_AUTO := true
+const DEFAULT_GEO_MAP_SIZE := -1.0
+const DEFAULT_GEO_LATITUDE := 50.0
+const DEFAULT_GEO_LONGITUDE := 50.0
+const DEFAULT_TEMPLATE := "continents"
 const DEFAULT_THEME_COLOR := "#4b70f5"
 const DEFAULT_TRANSPARENCY := 8.0
 
@@ -43,6 +49,11 @@ static func load_all() -> Dictionary:
 	data["scale_bar_on_map"] = bool(config.get_value("map", "scale_bar_on_map", DEFAULT_SCALE_BAR_ON_MAP))
 	data["vignette_on_map"] = bool(config.get_value("map", "vignette_on_map", DEFAULT_VIGNETTE_ON_MAP))
 	data["distance_scale"] = float(config.get_value("map", "distance_scale", DEFAULT_DISTANCE_SCALE))
+	data["template"] = str(config.get_value("map", "template", DEFAULT_TEMPLATE))
+	data["geo_auto"] = bool(config.get_value("map", "geo_auto", DEFAULT_GEO_AUTO))
+	data["geo_map_size"] = float(config.get_value("map", "geo_map_size", DEFAULT_GEO_MAP_SIZE))
+	data["geo_latitude"] = float(config.get_value("map", "geo_latitude", DEFAULT_GEO_LATITUDE))
+	data["geo_longitude"] = float(config.get_value("map", "geo_longitude", DEFAULT_GEO_LONGITUDE))
 	var layers: Dictionary = {}
 	if config.has_section("layers"):
 		for key: String in config.get_section_keys("layers"):
@@ -66,6 +77,11 @@ static func save_all(data: Dictionary) -> Error:
 	config.set_value("map", "scale_bar_on_map", bool(data.get("scale_bar_on_map", DEFAULT_SCALE_BAR_ON_MAP)))
 	config.set_value("map", "vignette_on_map", bool(data.get("vignette_on_map", DEFAULT_VIGNETTE_ON_MAP)))
 	config.set_value("map", "distance_scale", float(data.get("distance_scale", DEFAULT_DISTANCE_SCALE)))
+	config.set_value("map", "template", str(data.get("template", DEFAULT_TEMPLATE)))
+	config.set_value("map", "geo_auto", bool(data.get("geo_auto", DEFAULT_GEO_AUTO)))
+	config.set_value("map", "geo_map_size", float(data.get("geo_map_size", DEFAULT_GEO_MAP_SIZE)))
+	config.set_value("map", "geo_latitude", float(data.get("geo_latitude", DEFAULT_GEO_LATITUDE)))
+	config.set_value("map", "geo_longitude", float(data.get("geo_longitude", DEFAULT_GEO_LONGITUDE)))
 	var layers: Dictionary = data.get("layers", {})
 	for key: String in layers.keys():
 		config.set_value("layers", key, bool(layers[key]))
